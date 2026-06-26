@@ -1,0 +1,17 @@
+# Environment variables
+.env
+
+# Virtual environments
+env/
+venv/
+.venv/
+ENV/
+
+# Python caching
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Node.js modules
+node_modules/

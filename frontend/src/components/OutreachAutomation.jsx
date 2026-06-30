@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { toast } from "react-toastify";
 import { 
   Mail, 
   MessageSquare, 
@@ -374,7 +375,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
       if (res.ok) {
         if (data.status === "exists") {
           addLog("SYSTEM", `${inc.name} is already a lead in this campaign.`);
-          alert(`${inc.name} is already a lead in this campaign.`);
+          toast.warning(`${inc.name} is already a lead in this campaign.`);
         } else {
           addLog("OUTREACH", `Successfully added ${inc.name} to campaigns as Draft.`);
           await fetchData();
@@ -396,10 +397,10 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
       if (res.ok && data.authorization_url) {
         window.open(data.authorization_url, "_blank");
       } else {
-        alert(data.detail || "Failed to generate authorization URL.");
+        toast.error(data.detail || "Failed to generate authorization URL.");
       }
     } catch (err) {
-      alert("Failed to connect to backend authorization service.");
+      toast.error("Failed to connect to backend authorization service.");
     }
   };
 
@@ -538,7 +539,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
         if (selectedLeadForDetail && selectedLeadForDetail.id === leadId) {
           setSelectedLeadForDetail(prev => ({ ...prev, notes: notesText }));
         }
-        alert("Notes saved successfully!");
+        toast.success("Notes saved successfully!");
       } else {
         addLog("ERROR", `Failed to save notes: ${data.detail || "Server error"}`);
       }
@@ -550,7 +551,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   const handleExportLeadsToCsv = () => {
     addLog("SYSTEM", "Compiling campaign leads dataset to CSV...");
     if (leads.length === 0) {
-      alert("No leads available to export.");
+      toast.warning("No leads available to export.");
       return;
     }
     
@@ -608,16 +609,16 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
       const data = await res.json();
       if (res.ok) {
         addLog("CALENDAR", `Meeting successfully scheduled! Meet Link: ${data.meeting_link}`);
-        alert(`Meeting successfully scheduled! Email invite sent to ${selectedLeadForMeeting.email}.`);
+        toast.success(`Meeting successfully scheduled! Email invite sent to ${selectedLeadForMeeting.email}.`);
         setSelectedLeadForMeeting(null);
         await fetchData();
       } else {
         addLog("ERROR", `Failed to schedule meeting: ${data.detail || "Server error"}`);
-        alert(`Error: ${data.detail || "Failed to schedule meeting"}`);
+        toast.error(`Error: ${data.detail || "Failed to schedule meeting"}`);
       }
     } catch (err) {
       addLog("ERROR", "Failed to connect to backend schedule-meeting API.");
-      alert("Failed to connect to backend schedule-meeting API.");
+      toast.error("Failed to connect to backend schedule-meeting API.");
     } finally {
       setSchedulingMeeting(false);
     }
@@ -740,7 +741,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
     const isEmpty = !buffer.some(color => color !== 0);
     
     if (isEmpty) {
-      alert("Please draw your signature first.");
+      toast.warning("Please draw your signature first.");
       return;
     }
     
@@ -754,7 +755,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
     if (!file) return;
 
     if (!file.type.startsWith("image/")) {
-      alert("Please upload a valid image file.");
+      toast.warning("Please upload a valid image file.");
       return;
     }
 
@@ -792,11 +793,11 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   const handleSendMou = async (e) => {
     e.preventDefault();
     if (!selectedIncId) {
-      alert("Please select First Party Incubator.");
+      toast.warning("Please select First Party Incubator.");
       return;
     }
     if (!signatureData) {
-      alert("Please draw or upload and adopt your digital signature first.");
+      toast.warning("Please draw or upload and adopt your digital signature first.");
       return;
     }
 
@@ -1980,37 +1981,6 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                   Save Notes
                 </button>
               </div>
-
-              {selectedLeadForDetail.lead_score >= 80 && (
-                <div style={{ 
-                  padding: "0.75rem", 
-                  background: "rgba(16,185,129,0.06)", 
-                  border: "1px solid rgba(16,185,129,0.2)", 
-                  borderRadius: "6px",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "0.35rem"
-                }}>
-                  <div style={{ fontSize: "0.8rem", fontWeight: "700", color: "#000000", display: "flex", alignItems: "center", gap: "0.25rem" }}>
-                    <CheckCircle size={14} />
-                    <span>Google Calendar Meeting Synchronized</span>
-                  </div>
-                  <div style={{ fontSize: "0.75rem", color: "#000000" }}>
-                    <strong>Meeting:</strong> MOU Collaboration Partnership Discussion
-                  </div>
-                  <div style={{ fontSize: "0.75rem", color: "#000000" }}>
-                    <strong>Scheduled:</strong> {selectedLeadForDetail.meeting_scheduled_at}
-                  </div>
-                  <a 
-                    href={selectedLeadForDetail.meeting_link || "https://meet.google.com"} 
-                    target="_blank" 
-                    rel="noreferrer" 
-                    style={{ fontSize: "0.75rem", color: "var(--accent-green)", textDecoration: "underline", alignSelf: "flex-start", marginTop: "0.25rem", fontWeight: "600" }}
-                  >
-                    Open Google Meet Invite URL
-                  </a>
-                </div>
-              )}
             </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "1.5rem" }}>

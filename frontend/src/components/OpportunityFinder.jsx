@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { toast } from "react-toastify";
 import { Compass, Sparkles, MapPin, Award, CheckCircle, ArrowRight, Building } from "lucide-react";
 
 const SECTORS = [
@@ -57,7 +58,7 @@ export default function OpportunityFinder({ onDraftMou }) {
       setSubmitted(true);
     } catch (err) {
       console.error("Match finding failed:", err);
-      alert("Failed to connect to the backend server.");
+      toast.error("Failed to connect to the backend server.");
     } finally {
       setLoading(false);
     }

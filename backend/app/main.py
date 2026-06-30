@@ -1273,6 +1273,25 @@ def seed_outreach_leads():
         ))
         conn.commit()
 
+    # Ensure trial2 incubator exists in incubators table
+    cursor.execute("SELECT COUNT(*) FROM incubators WHERE id = 'inc_trial_rugved2'")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute('''
+            INSERT INTO incubators (
+                id, name, email, city, state, organization_type, confidence_score, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            "inc_trial_rugved2",
+            "Trial Incubator (trial2)",
+            "rugveddevmain@gmail.com",
+            "Nagpur",
+            "Maharashtra",
+            "Academic Collab Partner",
+            1.0,
+            "resolved"
+        ))
+        conn.commit()
+
     # Ensure trial lead exists in outreach_leads
     cursor.execute("SELECT COUNT(*) FROM outreach_leads WHERE email = 'kadurugved0@gmail.com'")
     if cursor.fetchone()[0] == 0:
@@ -1281,6 +1300,16 @@ def seed_outreach_leads():
                 id, incubator_id, incubator_name, email, status, lead_score
             ) VALUES (?, ?, ?, ?, ?, ?)
         ''', ("lead_trial_rugved", "inc_trial_rugved", "Trial Incubator (kadurugved0)", "kadurugved0@gmail.com", "Draft", 0))
+        conn.commit()
+
+    # Ensure trial2 lead exists in outreach_leads
+    cursor.execute("SELECT COUNT(*) FROM outreach_leads WHERE email = 'rugveddevmain@gmail.com'")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute('''
+            INSERT INTO outreach_leads (
+                id, incubator_id, incubator_name, email, status, lead_score
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        ''', ("lead_trial_rugved2", "inc_trial_rugved2", "Trial Incubator (trial2)", "rugveddevmain@gmail.com", "Draft", 0))
         conn.commit()
 
     # Check if leads exist
@@ -1451,10 +1480,30 @@ RTMUN Innovation Portal Admin
     msg_status = "Real email sent via SMTP" if email_sent_successfully else "SMTP not configured, simulated sending"
     return {"status": "success", "message": f"Outreach email campaign successfully triggered for {lead['incubator_name']} ({msg_status})."}
 
+def clean_email_reply(text: str) -> str:
+    if not text:
+        return ""
+    lines = []
+    thread_indicators = [
+        "on ", "wrote:", "-----original message-----", "from:", "to:", "sent:"
+    ]
+    for line in text.splitlines():
+        line_strip = line.strip()
+        # Skip quoted lines in email threads
+        if line_strip.startswith(">"):
+            continue
+        # Stop processing if we hit the beginning of the reply/forward thread history
+        line_lower = line_strip.lower()
+        if any(indicator in line_lower for indicator in thread_indicators) and ("@" in line_lower or "," in line_lower or ":" in line_lower):
+            break
+        lines.append(line)
+    return "\n".join(lines).strip()
+
 def process_reply(lead_id: str, reply_text: str):
     import uuid
     import json
     import os
+    import re
     from datetime import datetime
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1465,12 +1514,77 @@ def process_reply(lead_id: str, reply_text: str):
         conn.close()
         return None
         
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
     api_key = os.environ.get("GEMINI_API_KEY")
     intent = "Neutral"
     score = 50
     summary = "Acknowledge receipt and waiting for more context."
     
-    if api_key and "your_gemini" not in api_key:
+    analyzed = False
+    cleaned_reply = clean_email_reply(reply_text)
+    
+    # Try OpenRouter first
+    if openrouter_key and "your_openrouter" not in openrouter_key:
+        try:
+            import requests
+            prompt = f"""
+            You are the AI Intent Classifier for the Indian Startup Ecosystem Outreach System.
+            Analyze the following email reply from an incubator and output a JSON object containing:
+            1. "intent": One of "Positive", "Neutral", "Negative", "Information Request"
+            2. "score": An interest score from 0 to 100 representing how eager they are to collaborate/arrange a meeting. (e.g. "we would love to meet" = 90+, "tell me more" = 60-79, "no thanks" = <30).
+            3. "summary": A 1-sentence summary of their response.
+            
+            Reply text: "{cleaned_reply}"
+            
+            Output ONLY valid JSON.
+            """
+            
+            # We can try a few models to be robust
+            models_to_try = [
+                "google/gemini-2.5-flash", 
+                "meta-llama/llama-3-8b-instruct:free", 
+                "google/gemma-2-9b-it:free"
+            ]
+            
+            for model in models_to_try:
+                try:
+                    response = requests.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {openrouter_key}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "model": model,
+                            "messages": [
+                                {"role": "user", "content": prompt}
+                            ],
+                            "temperature": 0.1
+                        },
+                        timeout=12
+                    )
+                    if response.status_code == 200:
+                        result_data = response.json()
+                        result_text = result_data["choices"][0]["message"]["content"].strip()
+                        if "```json" in result_text:
+                            result_text = result_text.split("```json")[1].split("```")[0].strip()
+                        elif "```" in result_text:
+                            result_text = result_text.split("```")[1].split("```")[0].strip()
+                        
+                        res = json.loads(result_text)
+                        intent = res.get("intent", intent)
+                        score = int(res.get("score", score))
+                        summary = res.get("summary", summary)
+                        analyzed = True
+                        print(f"OpenRouter analyzed reply successfully using {model}.")
+                        break
+                except Exception as model_err:
+                    print(f"OpenRouter model {model} failed: {model_err}")
+        except Exception as e:
+            print("OpenRouter classification failed:", e)
+            
+    # Try Gemini fallback if OpenRouter did not succeed
+    if not analyzed and api_key and "your_gemini" not in api_key:
         try:
             import google.generativeai as genai
             genai.configure(api_key=api_key)
@@ -1483,7 +1597,7 @@ def process_reply(lead_id: str, reply_text: str):
             2. "score": An interest score from 0 to 100 representing how eager they are to collaborate/arrange a meeting. (e.g. "we would love to meet" = 90+, "tell me more" = 60-79, "no thanks" = <30).
             3. "summary": A 1-sentence summary of their response.
             
-            Reply text: "{reply_text}"
+            Reply text: "{cleaned_reply}"
             
             Output ONLY valid JSON.
             """
@@ -1498,21 +1612,66 @@ def process_reply(lead_id: str, reply_text: str):
             intent = res.get("intent", intent)
             score = int(res.get("score", score))
             summary = res.get("summary", summary)
+            analyzed = True
         except Exception as e:
             print("Gemini analysis error:", e)
             
     # Local fallback rules
-    if not api_key or "your_gemini" in api_key or score == 50:
-        reply_lower = reply_text.lower()
-        if any(w in reply_lower for w in ["love to", "excited", "schedule", "meeting", "meet", "calendar", "join", "interested", "sure", "definitely", "yes", "great", "mou"]):
-            intent = "Positive"
-            score = 90
-            summary = "Expressed strong interest and requested to schedule a meeting."
-        elif any(w in reply_lower for w in ["no", "decline", "not interested", "sorry", "cannot", "cancel", "busy", "unable"]):
+    if not analyzed or score == 50:
+        reply_lower = cleaned_reply.lower()
+        
+        negative_keywords = [
+            r"not\s+interested", 
+            r"not\s+intrested", 
+            r"uninterested", 
+            r"no\s+interest", 
+            r"no\s+thanks", 
+            r"\bno\b", 
+            r"decline", 
+            r"sorry", 
+            r"cannot", 
+            r"cancel", 
+            r"busy", 
+            r"unable",
+            r"not\s+looking"
+        ]
+        
+        positive_keywords = [
+            r"love\s+to", 
+            r"excited", 
+            r"schedule", 
+            r"meeting", 
+            r"meet", 
+            r"calendar", 
+            r"join", 
+            r"interested", 
+            r"sure", 
+            r"definitely", 
+            r"yes", 
+            r"great", 
+            r"mou"
+        ]
+        
+        info_keywords = [
+            r"what", 
+            r"how", 
+            r"information", 
+            r"details", 
+            r"docs", 
+            r"document", 
+            r"questions", 
+            r"send\s+me"
+        ]
+        
+        if any(re.search(pat, reply_lower) for pat in negative_keywords):
             intent = "Negative"
             score = 15
             summary = "Declined the collaboration proposal."
-        elif any(w in reply_lower for w in ["what", "how", "information", "details", "docs", "document", "questions", "send me"]):
+        elif any(re.search(pat, reply_lower) for pat in positive_keywords):
+            intent = "Positive"
+            score = 90
+            summary = "Expressed strong interest and requested to schedule a meeting."
+        elif any(re.search(pat, reply_lower) for pat in info_keywords):
             intent = "Information Request"
             score = 70
             summary = "Requested additional information or documentation."
@@ -1624,7 +1783,7 @@ def check_imap_replies_sync():
         cursor = conn.cursor()
         
         # Get active leads email map that are currently waiting for a reply
-        cursor.execute("SELECT id, email, status, incubator_name FROM outreach_leads WHERE status = 'Sent'")
+        cursor.execute("SELECT id, email, status, incubator_name, sent_at FROM outreach_leads WHERE status = 'Sent'")
         leads = {row["email"].lower().strip(): row for row in cursor.fetchall()}
         
         print("Active leads waiting for replies (Sent status):", list(leads.keys()))
@@ -1649,6 +1808,25 @@ def check_imap_replies_sync():
                 
                 if from_email in leads:
                     lead = leads[from_email]
+                    
+                    # Check if email is received after outreach email sent time
+                    msg_date_str = msg.get("Date")
+                    if msg_date_str:
+                        try:
+                            import email.utils
+                            from datetime import datetime
+                            msg_date = email.utils.parsedate_to_datetime(msg_date_str)
+                            msg_date_local = msg_date.astimezone().replace(tzinfo=None)
+                            
+                            sent_at_str = lead["sent_at"]
+                            if sent_at_str:
+                                sent_at_dt = datetime.fromisoformat(sent_at_str)
+                                if msg_date_local < sent_at_dt:
+                                    print(f"Skipping email from {from_email} as it was received at {msg_date_local} (before outreach email sent at {sent_at_dt})")
+                                    continue
+                        except Exception as date_err:
+                            print(f"Error parsing date for message from {from_email}: {date_err}")
+                            
                     print(f"Match found for Sent lead: {lead['incubator_name']} ({from_email})!")
                     
                     body = ""
@@ -2175,10 +2353,22 @@ def update_meeting_status(req: UpdateMeetingStatusRequest):
     if not meeting:
         conn.close()
         raise HTTPException(status_code=404, detail="Meeting not found")
-    cursor.execute("UPDATE scheduled_meetings SET status = ? WHERE id = ?", (req.status, req.meeting_id))
-    conn.commit()
-    conn.close()
-    return {"status": "success", "message": f"Meeting status updated to {req.status}."}
+    
+    if req.status.lower() == "completed":
+        lead_id = meeting["lead_id"]
+        # Delete this meeting and any other meetings associated with this lead
+        cursor.execute("DELETE FROM scheduled_meetings WHERE id = ?", (req.meeting_id,))
+        if lead_id:
+            cursor.execute("DELETE FROM scheduled_meetings WHERE lead_id = ?", (lead_id,))
+            cursor.execute("DELETE FROM outreach_leads WHERE id = ?", (lead_id,))
+        conn.commit()
+        conn.close()
+        return {"status": "success", "message": "Meeting completed. Incubator removed from campaign and meetings."}
+    else:
+        cursor.execute("UPDATE scheduled_meetings SET status = ? WHERE id = ?", (req.status, req.meeting_id))
+        conn.commit()
+        conn.close()
+        return {"status": "success", "message": f"Meeting status updated to {req.status}."}
 
 @app.get("/api/outreach/calendar-events")
 def get_external_calendar_events():

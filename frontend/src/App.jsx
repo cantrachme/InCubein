@@ -13,6 +13,8 @@ import AnalyticsDashboard from "./components/AnalyticsDashboard";
 import DirectoryView from "./components/DirectoryView";
 import AiAssistant from "./components/AiAssistant";
 import OutreachAutomation from "./components/OutreachAutomation";
+import { ToastContainer } from "react-toastify";
+import "react-toastify/dist/ReactToastify.css";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("dashboard");
@@ -162,6 +164,7 @@ export default function App() {
         {renderActiveView()}
         {activeTab === "dashboard" && <AiAssistant />}
       </div>
+      <ToastContainer position="top-right" autoClose={3000} />
     </div>
   );
 }

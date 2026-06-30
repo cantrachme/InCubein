@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { toast } from "react-toastify";
 import { Search, MapPin, Globe, Mail, Phone, ExternalLink, Calendar, Building, HelpCircle, Layers, FileSignature, Send, X } from "lucide-react";
 
 export default function DirectoryView({ filtersData, onDraftMou }) {
@@ -95,11 +96,11 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
         setIncubators(prev => prev.map(inc => inc.id === updatedInc.id ? updatedInc : inc));
         setIsEditing(false);
       } else {
-        alert("Error saving contact: " + (data.detail || "Unknown error"));
+        toast.error("Error saving contact: " + (data.detail || "Unknown error"));
       }
     } catch (err) {
       console.error(err);
-      alert("Failed to connect to the backend server.");
+      toast.error("Failed to connect to the backend server.");
     } finally {
       setSavingContact(false);
     }
@@ -111,7 +112,7 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
     
     const emailToUse = activeDrawerInc.email || editEmail;
     if (!emailToUse) {
-      alert("No email address available for this incubator. Please click 'Edit Contact' to add one first.");
+      toast.warning("No email address available for this incubator. Please click 'Edit Contact' to add one first.");
       return;
     }
     

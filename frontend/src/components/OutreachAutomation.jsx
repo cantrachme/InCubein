@@ -78,6 +78,8 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   const [loading, setLoading] = useState(true);
   const [resetting, setResetting] = useState(false);
   const [checkingReplies, setCheckingReplies] = useState(false);
+  const [checkingFollowups, setCheckingFollowups] = useState(false);
+  const [followupDelay, setFollowupDelay] = useState(120);
   
   // Active workflow node (for flowchart animation highlight)
   // 1: Send, 2: Reply, 3: AI intent, 4: Score, 5: Calendar
@@ -306,12 +308,17 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
         console.error("Error fetching calendar events:", calErr);
       }
 
-      // Fetch auto-scan interval config
+      // Fetch auto-scan interval and followup delay config
       try {
         const configRes = await fetch("http://127.0.0.1:8000/api/outreach/config");
         const configData = await configRes.json();
-        if (configData && typeof configData.sync_interval === "number") {
-          setSyncInterval(configData.sync_interval);
+        if (configData) {
+          if (typeof configData.sync_interval === "number") {
+            setSyncInterval(configData.sync_interval);
+          }
+          if (typeof configData.followup_delay === "number") {
+            setFollowupDelay(configData.followup_delay);
+          }
         }
       } catch (configErr) {
         console.error("Error fetching sync config:", configErr);
@@ -343,12 +350,31 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
       const res = await fetch("http://127.0.0.1:8000/api/outreach/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sync_interval: newVal })
+        body: JSON.stringify({ sync_interval: newVal, followup_delay: followupDelay })
       });
       if (res.ok) {
         addLog("SYSTEM", `Auto scan interval successfully updated to ${newVal === 0 ? "Disabled" : `${newVal} seconds`}.`);
       } else {
         addLog("ERROR", "Failed to persist scan interval setting on backend.");
+      }
+    } catch (err) {
+      addLog("ERROR", "Failed to connect to backend configuration API.");
+    }
+  };
+
+  const handleFollowupDelayChange = async (newVal) => {
+    setFollowupDelay(newVal);
+    addLog("SYSTEM", `Changing follow-up delay to ${newVal} seconds...`);
+    try {
+      const res = await fetch("http://127.0.0.1:8000/api/outreach/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sync_interval: syncInterval, followup_delay: newVal })
+      });
+      if (res.ok) {
+        addLog("SYSTEM", `Follow-up delay successfully updated to ${newVal} seconds.`);
+      } else {
+        addLog("ERROR", "Failed to persist follow-up delay setting on backend.");
       }
     } catch (err) {
       addLog("ERROR", "Failed to connect to backend configuration API.");
@@ -649,6 +675,57 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
       setActiveWorkflowNode(0);
     }
   };
+ 
+  const handleSendFollowup = async (leadId, leadName, leadEmail) => {
+    addLog("OUTREACH", `Triggering outreach partnership follow-up email to ${leadName} (${leadEmail})...`);
+    
+    try {
+      const res = await fetch("http://127.0.0.1:8000/api/outreach/send-followup-single", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lead_id: leadId })
+      });
+      const data = await res.json();
+      
+      if (res.ok) {
+        addLog("OUTREACH", `Followup successfully dispatched. Status: Follow-up Sent.`);
+        toast.success(`Follow-up email sent to ${leadName}!`);
+        await fetchData();
+      } else {
+        addLog("ERROR", `Failed to send followup: ${data.detail || "Server error"}`);
+        toast.error(`Failed to send followup: ${data.detail || "Server error"}`);
+      }
+    } catch (err) {
+      addLog("ERROR", "Connection to backend followup API failed.");
+    }
+  };
+
+  const handleTriggerFollowups = async () => {
+    setCheckingFollowups(true);
+    addLog("SYSTEM", "Scanning for leads due for partnership follow-up emails...");
+    
+    try {
+      const res = await fetch("http://127.0.0.1:8000/api/outreach/send-followups", { method: "POST" });
+      const data = await res.json();
+      
+      if (res.ok) {
+        const count = data.followups_sent_count || 0;
+        addLog("SYSTEM", `Follow-up scan complete. Sent ${count} follow-up email(s).`);
+        if (count > 0 && data.dispatched) {
+          data.dispatched.forEach(item => {
+            addLog("OUTREACH", `Dispatched follow-up #${item.followup_number} to ${item.incubator_name} (${item.email}). Status: ${item.status}.`);
+          });
+        }
+        await fetchData();
+      } else {
+        addLog("ERROR", `Follow-up scan failed: ${data.detail || "Server error"}`);
+      }
+    } catch (err) {
+      addLog("ERROR", "Connection to backend follow-up trigger API failed.");
+    } finally {
+      setCheckingFollowups(false);
+    }
+  };
 
   const handleCheckReplies = async () => {
     setCheckingReplies(true);
@@ -905,6 +982,23 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
               </select>
             </div>
 
+            <div style={{ display: "flex", alignItems: "center", gap: "0.35rem", marginRight: "0.5rem" }}>
+              <span style={{ fontSize: "0.8rem", color: "#000000", whiteSpace: "nowrap", fontWeight: "600" }}>Follow-up Delay:</span>
+              <select 
+                className="form-input" 
+                style={{ padding: "0.25rem 0.5rem", fontSize: "0.8rem", width: "130px", height: "32px", color: "black", background: "#f8fafc", border: "1px solid var(--border-color)", borderRadius: "4px", margin: 0 }}
+                value={followupDelay}
+                onChange={(e) => handleFollowupDelayChange(parseInt(e.target.value))}
+              >
+                <option value={30}>30 sec (Test)</option>
+                <option value={60}>1 min (Test)</option>
+                <option value={120}>2 min (Test)</option>
+                <option value={300}>5 min</option>
+                <option value={86400 * 3}>3 Days</option>
+                <option value={86400 * 7}>7 Days</option>
+              </select>
+            </div>
+
             {oauthAuthorized ? (
               <div 
                 style={{ 
@@ -976,6 +1070,16 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
             >
               <RefreshCcw size={14} className={checkingReplies ? "spin" : ""} />
               <span>{checkingReplies ? "Scanning Inbox..." : "Check Live Replies"}</span>
+            </button>
+
+            <button 
+              className="btn btn-primary"
+              style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem", padding: "0.4rem 0.75rem", fontSize: "0.8rem", height: "32px", background: "rgba(139, 92, 246, 0.9)", border: "1px solid rgb(139, 92, 246)" }}
+              onClick={handleTriggerFollowups}
+              disabled={checkingFollowups}
+            >
+              <Send size={14} className={checkingFollowups ? "spin" : ""} />
+              <span>{checkingFollowups ? "Sending Followups..." : "Trigger Followups"}</span>
             </button>
             <button 
               className="btn btn-secondary" 
@@ -1485,6 +1589,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
               <option value="">All Statuses</option>
               <option value="Draft">Draft</option>
               <option value="Sent">Sent</option>
+              <option value="Follow-up Sent">Follow-up Sent</option>
               <option value="Replied">Replied</option>
               <option value="Meeting Scheduled">Meeting Scheduled</option>
               <option value="Not Interested">Not Interested</option>
@@ -1509,7 +1614,21 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                     <tr key={lead.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.03)", verticalAlign: "middle" }}>
                       <td style={{ padding: "0.75rem 0.5rem" }}>
                         <div style={{ fontWeight: "600", color: "#000000" }}>{lead.incubator_name}</div>
-                        <div style={{ fontSize: "0.75rem", color: "#000000" }}>{lead.email}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                          <span style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>{lead.email}</span>
+                          {(lead.followup_count || 0) > 0 && (
+                            <span style={{ 
+                              fontSize: "0.68rem", 
+                              fontWeight: "700",
+                              background: "rgba(224, 242, 254, 0.6)", 
+                              color: "#0369a1", 
+                              padding: "1px 5px", 
+                              borderRadius: "3px" 
+                            }}>
+                              Follow-ups: {lead.followup_count}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td style={{ padding: "0.75rem 0.5rem" }}>
                         <select
@@ -1527,25 +1646,28 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                               lead.status === "Meeting Scheduled" ? "#d1fae5" : 
                               lead.status === "Replied" ? "#ede9fe" :            
                               lead.status === "Sent" ? "#ecfeff" :               
+                              lead.status === "Follow-up Sent" ? "#e0f2fe" :
                               lead.status === "Not Interested" ? "#fee2e2" :     
                               "#f3f4f6",                                         
                             color: 
                               lead.status === "Meeting Scheduled" ? "#065f46" :
                               lead.status === "Replied" ? "#5b21b6" :
                               lead.status === "Sent" ? "#155e75" :
+                              lead.status === "Follow-up Sent" ? "#0369a1" :
                               lead.status === "Not Interested" ? "#991b1b" :
                               "#374151"
                           }}
                         >
                           <option value="Draft">Draft</option>
                           <option value="Sent">Sent</option>
+                          <option value="Follow-up Sent">Follow-up Sent</option>
                           <option value="Replied">Replied</option>
                           <option value="Meeting Scheduled">Meeting Scheduled</option>
                           <option value="Not Interested">Not Interested</option>
                         </select>
                       </td>
                       <td style={{ padding: "0.75rem 0.5rem", textAlign: "center" }}>
-                        {lead.status === "Draft" || lead.status === "Sent" ? (
+                        {lead.status === "Draft" || lead.status === "Sent" || lead.status === "Follow-up Sent" ? (
                           <span style={{ color: "#000000" }}>-</span>
                         ) : (
                           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.2rem" }}>
@@ -1576,6 +1698,27 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                             <span>Send Invite</span>
                           </button>
                         )}
+                        {(lead.status === "Sent" || lead.status === "Follow-up Sent") && (lead.followup_count || 0) < 2 && (
+                          <button 
+                            className="btn btn-primary" 
+                            style={{ 
+                              padding: "0.3rem 0.6rem", 
+                              fontSize: "0.75rem", 
+                              marginRight: "0.35rem",
+                              background: "#e0f2fe",
+                              border: "1px solid #0284c7",
+                              color: "#0369a1",
+                              fontWeight: "600",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "0.25rem"
+                            }}
+                            onClick={() => handleSendFollowup(lead.id, lead.incubator_name, lead.email)}
+                          >
+                            <Send size={12} />
+                            <span>Follow Up</span>
+                          </button>
+                        )}
                         {lead.status === "Replied" && (
                           <button 
                             className="btn btn-primary" 
@@ -1598,7 +1741,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                             Schedule Meet
                           </button>
                         )}
-                        {["Sent", "Replied", "Meeting Scheduled", "Not Interested"].includes(lead.status) && (
+                        {["Sent", "Follow-up Sent", "Replied", "Meeting Scheduled", "Not Interested"].includes(lead.status) && (
                           <button 
                             className="btn btn-secondary" 
                             style={{ padding: "0.3rem 0.6rem", fontSize: "0.75rem" }}
@@ -1903,6 +2046,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                     >
                       <option value="Draft">Draft</option>
                       <option value="Sent">Sent</option>
+                      <option value="Follow-up Sent">Follow-up Sent</option>
                       <option value="Replied">Replied</option>
                       <option value="Meeting Scheduled">Meeting Scheduled</option>
                       <option value="Not Interested">Not Interested</option>
@@ -1947,6 +2091,22 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                   <strong style={{ fontSize: "0.8rem", color: "#000000" }}>Computed Lead Score</strong>
                   <div style={{ fontWeight: "700", fontSize: "1.1rem", color: "#000000" }}>
                     {selectedLeadForDetail.lead_score}/100
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
+                <div>
+                  <strong style={{ fontSize: "0.8rem", color: "#000000" }}>Follow-ups Sent</strong>
+                  <div style={{ marginTop: "0.25rem", fontSize: "0.85rem", color: "#000000", fontWeight: "600" }}>
+                    {selectedLeadForDetail.followup_count || 0} / 2
+                  </div>
+                </div>
+
+                <div>
+                  <strong style={{ fontSize: "0.8rem", color: "#000000" }}>Last Follow-up Sent At</strong>
+                  <div style={{ marginTop: "0.25rem", fontSize: "0.8rem", color: "#000000" }}>
+                    {selectedLeadForDetail.last_followup_at ? new Date(selectedLeadForDetail.last_followup_at).toLocaleString() : "N/A"}
                   </div>
                 </div>
               </div>

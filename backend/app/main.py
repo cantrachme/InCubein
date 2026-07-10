@@ -1480,6 +1480,196 @@ RTMUN Innovation Portal Admin
     msg_status = "Real email sent via SMTP" if email_sent_successfully else "SMTP not configured, simulated sending"
     return {"status": "success", "message": f"Outreach email campaign successfully triggered for {lead['incubator_name']} ({msg_status})."}
 
+def send_followup_email(lead_id: str, lead_name: str, lead_email: str, followup_number: int):
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from datetime import datetime
+    import os
+    
+    smtp_host = os.environ.get("SMTP_HOST")
+    smtp_port = os.environ.get("SMTP_PORT", "587")
+    smtp_user = os.environ.get("SMTP_USER")
+    smtp_pass = os.environ.get("SMTP_PASS")
+    sender_email = os.environ.get("SENDER_EMAIL") or smtp_user or "no-reply@rtmun.ac.in"
+    
+    if smtp_user:
+        smtp_user = smtp_user.strip().strip('"').strip("'")
+    if smtp_pass:
+        smtp_pass = smtp_pass.strip().strip('"').strip("'")
+    if sender_email:
+        sender_email = sender_email.strip().strip('"').strip("'")
+        
+    is_smtp_ready = smtp_host and smtp_user and smtp_pass and "your_email" not in smtp_user
+    email_sent_successfully = False
+    
+    subject = f"Following up: Academic Partnership Opportunity - RTMUN Innovation Ecosystem (Follow-up #{followup_number})"
+    
+    body_text = f"""Dear Representative,
+
+We hope this email finds you well. 
+
+We are writing to follow up on our previous email regarding a potential Strategic Cooperation and Academic Collaboration between the RTMUN Startup Platform and your incubation center.
+
+We would love to share a draft MoU agreement with your incubation center and explore mutually beneficial synergies.
+
+Please reply to this email to confirm your interest and schedule an introductory virtual meeting.
+
+Sincerely,
+RTMUN Innovation Portal Admin
+(Follow-up Reference #{followup_number})
+"""
+    
+    if is_smtp_ready:
+        try:
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"] = f"RTMUN Outreach <{sender_email}>"
+            msg["To"] = lead_email
+            
+            msg.attach(MIMEText(body_text, "plain"))
+            
+            port = int(smtp_port)
+            if port == 465:
+                server = smtplib.SMTP_SSL(smtp_host, port, timeout=10)
+            else:
+                server = smtplib.SMTP(smtp_host, port, timeout=10)
+                server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.sendmail(sender_email, [lead_email], msg.as_string())
+            server.quit()
+            email_sent_successfully = True
+        except Exception as e:
+            print(f"Error sending follow-up email via SMTP to {lead_email}: {e}")
+            
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        UPDATE outreach_leads 
+        SET status = 'Follow-up Sent', 
+            followup_count = ?, 
+            last_followup_at = ? 
+        WHERE id = ?
+    ''', (followup_number, datetime.now().isoformat(), lead_id))
+    conn.commit()
+    conn.close()
+    
+    return email_sent_successfully
+
+class FollowupEmailRequest(BaseModel):
+    lead_id: str
+
+@app.post("/api/outreach/send-followup-single")
+def api_send_followup_single(req: FollowupEmailRequest):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM outreach_leads WHERE id = ?", (req.lead_id,))
+    lead = cursor.fetchone()
+    if not lead:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Lead not found")
+    
+    lead = dict(lead)
+    current_count = lead.get("followup_count", 0) or 0
+    
+    if lead["status"] not in ["Sent", "Follow-up Sent"]:
+        conn.close()
+        raise HTTPException(status_code=400, detail=f"Lead status is '{lead['status']}'. Can only follow up on Sent or Follow-up Sent leads.")
+        
+    next_count = current_count + 1
+    if next_count > 2:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Maximum follow-ups (2) already reached for this lead.")
+        
+    conn.close()
+    
+    email_sent = send_followup_email(lead["id"], lead["incubator_name"], lead["email"], next_count)
+    msg_status = "Real email sent via SMTP" if email_sent else "SMTP not configured, simulated sending"
+    
+    return {
+        "status": "success", 
+        "message": f"Follow-up #{next_count} successfully triggered for {lead['incubator_name']} ({msg_status}).",
+        "followup_count": next_count
+    }
+
+@app.post("/api/outreach/send-followups")
+def api_send_followups():
+    from datetime import datetime
+    global FOLLOWUP_DELAY
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT * FROM outreach_leads WHERE status IN ('Sent', 'Follow-up Sent')")
+    leads = [dict(row) for row in cursor.fetchall()]
+    
+    dispatched = []
+    now = datetime.now()
+    
+    for lead in leads:
+        last_time_str = lead.get("last_followup_at") or lead.get("sent_at")
+        if not last_time_str:
+            continue
+            
+        try:
+            last_time = datetime.fromisoformat(last_time_str)
+            elapsed_seconds = (now - last_time).total_seconds()
+            
+            if elapsed_seconds >= FOLLOWUP_DELAY:
+                current_count = lead.get("followup_count", 0) or 0
+                next_count = current_count + 1
+                
+                if next_count <= 2:
+                    email_sent = send_followup_email(lead["id"], lead["incubator_name"], lead["email"], next_count)
+                    msg_status = "SMTP Sent" if email_sent else "Simulated"
+                    dispatched.append({
+                        "id": lead["id"],
+                        "incubator_name": lead["incubator_name"],
+                        "email": lead["email"],
+                        "followup_number": next_count,
+                        "status": msg_status
+                    })
+        except Exception as e:
+            print(f"Error parsing date/sending follow-up for lead {lead['email']}: {e}")
+            
+    conn.close()
+    return {
+        "status": "success",
+        "checked_at": now.isoformat(),
+        "followups_sent_count": len(dispatched),
+        "dispatched": dispatched
+    }
+
+def check_and_send_followups_sync():
+    from datetime import datetime
+    global FOLLOWUP_DELAY
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM outreach_leads WHERE status IN ('Sent', 'Follow-up Sent')")
+    leads = [dict(row) for row in cursor.fetchall()]
+    
+    now = datetime.now()
+    for lead in leads:
+        last_time_str = lead.get("last_followup_at") or lead.get("sent_at")
+        if not last_time_str:
+            continue
+            
+        try:
+            last_time = datetime.fromisoformat(last_time_str)
+            elapsed_seconds = (now - last_time).total_seconds()
+            if elapsed_seconds >= FOLLOWUP_DELAY:
+                current_count = lead.get("followup_count", 0) or 0
+                next_count = current_count + 1
+                if next_count <= 2:
+                    print(f"Background daemon: Triggering follow-up #{next_count} for {lead['incubator_name']} ({lead['email']})")
+                    send_followup_email(lead["id"], lead["incubator_name"], lead["email"], next_count)
+        except Exception as e:
+            print(f"Background daemon error sending follow-up: {e}")
+            
+    conn.close()
+
 def clean_email_reply(text: str) -> str:
     if not text:
         return ""
@@ -1783,10 +1973,10 @@ def check_imap_replies_sync():
         cursor = conn.cursor()
         
         # Get active leads email map that are currently waiting for a reply
-        cursor.execute("SELECT id, email, status, incubator_name, sent_at FROM outreach_leads WHERE status = 'Sent'")
+        cursor.execute("SELECT id, email, status, incubator_name, sent_at FROM outreach_leads WHERE status IN ('Sent', 'Follow-up Sent')")
         leads = {row["email"].lower().strip(): row for row in cursor.fetchall()}
         
-        print("Active leads waiting for replies (Sent status):", list(leads.keys()))
+        print("Active leads waiting for replies (Sent/Follow-up status):", list(leads.keys()))
         
         for m_id in reversed(mail_ids): # Scan from newest to oldest
             if len(leads) == 0:
@@ -2222,20 +2412,24 @@ def get_oauth_status():
 
 class OutreachConfig(BaseModel):
     sync_interval: int
+    followup_delay: Optional[int] = 120
 
 IMAP_SYNC_INTERVAL = 30  # background IMAP check interval in seconds. 0 or negative means manual only.
+FOLLOWUP_DELAY = 120
 
 @app.get("/api/outreach/config")
 def get_outreach_config():
-    global IMAP_SYNC_INTERVAL
-    return {"sync_interval": IMAP_SYNC_INTERVAL}
+    global IMAP_SYNC_INTERVAL, FOLLOWUP_DELAY
+    return {"sync_interval": IMAP_SYNC_INTERVAL, "followup_delay": FOLLOWUP_DELAY}
 
 @app.post("/api/outreach/config")
 def update_outreach_config(cfg: OutreachConfig):
-    global IMAP_SYNC_INTERVAL
+    global IMAP_SYNC_INTERVAL, FOLLOWUP_DELAY
     IMAP_SYNC_INTERVAL = cfg.sync_interval
-    print(f"Updated IMAP sync interval to: {IMAP_SYNC_INTERVAL} seconds")
-    return {"status": "success", "sync_interval": IMAP_SYNC_INTERVAL}
+    if cfg.followup_delay is not None:
+        FOLLOWUP_DELAY = cfg.followup_delay
+    print(f"Updated IMAP sync interval to: {IMAP_SYNC_INTERVAL} seconds, followup delay to: {FOLLOWUP_DELAY} seconds")
+    return {"status": "success", "sync_interval": IMAP_SYNC_INTERVAL, "followup_delay": FOLLOWUP_DELAY}
 
 @app.post("/api/outreach/check-replies")
 def trigger_check_replies():
@@ -2422,6 +2616,7 @@ def start_imap_checking_loop():
             try:
                 if IMAP_SYNC_INTERVAL > 0:
                     check_imap_replies_sync()
+                    check_and_send_followups_sync()
             except Exception as e:
                 print("IMAP background checker loop error:", e)
             

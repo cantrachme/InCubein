@@ -411,7 +411,7 @@ def send_mou_email(req: MouSendRequest):
             pass
             
     if not sender_email:
-        sender_email = "no-reply@rtmun.ac.in"
+        sender_email = "no-reply@incubein.com"
 
     # Generate HTML content
     html_content = f"""
@@ -596,7 +596,7 @@ def send_contact_email(req: ContactSendRequest):
             pass
             
     if not sender_email:
-        sender_email = "no-reply@rtmun.ac.in"
+        sender_email = "no-reply@incubein.com"
 
     # Generate HTML content
     datetime_section = ""
@@ -1020,27 +1020,35 @@ def chat_assistant(req: ChatRequest):
         
     sql += " LIMIT 15"
     
+    has_filters = bool(matched_states or matched_cities or matched_sectors or matched_shorts)
+    
     cursor.execute(sql, params)
     rows = [dict(r) for r in cursor.fetchall()]
     
+    no_matches_found = False
     if not rows:
-        cursor.execute("SELECT id, name, city, state, email, website, focus_areas, source_url FROM incubators ORDER BY name LIMIT 10")
-        rows = [dict(r) for r in cursor.fetchall()]
-        
+        if has_filters:
+            no_matches_found = True
+        else:
+            cursor.execute("SELECT id, name, city, state, email, website, focus_areas, source_url FROM incubators ORDER BY name LIMIT 10")
+            rows = [dict(r) for r in cursor.fetchall()]
+            
     conn.close()
     
-    context_items = []
-    for r in rows:
-        focus = ""
-        if r["focus_areas"]:
-            try:
-                focus = ", ".join(json.loads(r["focus_areas"]))
-            except:
-                focus = r["focus_areas"]
-        item = f"- Name: {r['name']}\n  Location: {r['city']}, {r['state']}\n  Sectors: {focus}\n  Website: {r['website'] or 'N/A'}\n  Email: {r['email'] or 'N/A'}\n  Funding Source: {r['source_url'] or 'N/A'}"
-        context_items.append(item)
-        
-    context_str = "\n\n".join(context_items)
+    if no_matches_found:
+        context_str = "DATABASE QUERY RESULT: No records matching the user's specific search terms (city, state, sectors, or names) were found in the database."
+    else:
+        context_items = []
+        for r in rows:
+            focus = ""
+            if r["focus_areas"]:
+                try:
+                    focus = ", ".join(json.loads(r["focus_areas"]))
+                except:
+                    focus = r["focus_areas"]
+            item = f"- Name: {r['name']}\n  Location: {r['city']}, {r['state']}\n  Sectors: {focus}\n  Website: {r['website'] or 'N/A'}\n  Email: {r['email'] or 'N/A'}\n  Funding Source: {r['source_url'] or 'N/A'}"
+            context_items.append(item)
+        context_str = "\n\n".join(context_items)
     
     openrouter_key = os.environ.get("OPENROUTER_API_KEY")
     if openrouter_key:
@@ -1083,45 +1091,13 @@ def chat_assistant(req: ChatRequest):
             models_to_try = [first] + rest
             
             system_prompt = f"""
-You are an intelligent assistant for the Indian Startup Ecosystem Intelligence Portal.
+You are the AI Assistant for the Indian Startup Ecosystem Intelligence Portal.
 
-Follow these rules:
-
-1. If the user asks about a technical term, concept, abbreviation, or definition:
-   → Respond in the structured format below.
-
-2. If the user sends a greeting (hi, hello, hey, etc.):
-   → Respond normally in a friendly conversational way.
-
-3. If the user asks a normal question:
-   → Answer clearly but do NOT force the structured template.
-
-Structured format (ONLY when explaining a term):
-
-You likely meant **<term>**, which stands for **<full form if applicable>**.
-
-Here's a clear explanation:
-
-### What is <term>?
-<definition>
-
-### Key Characteristics:
-1. <point>
-2. <point>
-3. <point>
-
-### Examples:
-- <example>
-- <example>
-
-### How It Works:
-<explanation>
-
-### Limitations:
-- <limitation>
-- <limitation>
-
-Use the following context from our database to formulate your response. Suggest specific incubators by name, location, and focus areas where relevant. If the context is not directly matching, answer the question generally using your knowledge but state that these are general facts and list the closest matches from the database context.
+Strict Instruction on Avoiding Hallucinations:
+1. You must answer queries using ONLY the provided Database Context. 
+2. Do not invent, guess, or assume any information not explicitly listed in the Database Context. If an incubator's website or email is not in the context, do not make one up.
+3. If the context states "No records matching...", or doesn't contain matching details to answer the user's specific question, you MUST explicitly state: "Based on the system database, I could not find matching records." Do not list or mention fake or external incubators.
+4. For general conversational requests (e.g. hello) or conceptual definitions (e.g. explaining what an incubator does), you can explain the concept generally, but make sure not to mention any custom incubators that are not in the provided Database Context.
 
 Database Context:
 {context_str}
@@ -1142,7 +1118,7 @@ Database Context:
                                 {"role": "system", "content": system_prompt},
                                 {"role": "user", "content": query}
                             ],
-                            "temperature": 0.3
+                            "temperature": 0.1
                         },
                         timeout=12
                     )
@@ -1162,7 +1138,7 @@ Database Context:
                 except Exception as e:
                     print(f"❌ {model} failed:", e)
                     continue
-
+ 
     # Fallback 2: Gemini API
     api_key = os.environ.get("GEMINI_API_KEY")
     if api_key:
@@ -1171,12 +1147,16 @@ Database Context:
             model = genai.GenerativeModel('gemini-1.5-flash')
             
             prompt = f"""
-            You are the AI Ecosystem Assistant for the Indian Startup Ecosystem Intelligence Portal. 
+            You are the AI Assistant for the Indian Startup Ecosystem Intelligence Portal.
             Answer the user's question clearly, professionally, and concisely using markdown formatting.
             
             User Question: "{query}"
             
-            Use the following context from our database to formulate your response. Suggest specific incubators by name, location, and focus areas where relevant. If the context is not directly matching, answer the question generally using your knowledge but state that these are general facts and list the closest matches from the database.
+            Strict Instruction on Avoiding Hallucinations:
+            1. You must answer queries using ONLY the provided Database Context. 
+            2. Do not invent, guess, or assume any information not explicitly listed in the Database Context. If an incubator's website or email is not in the context, do not make one up.
+            3. If the context states "No records matching...", or doesn't contain matching details to answer the user's specific question, you MUST explicitly state: "Based on the system database, I could not find matching records." Do not list or mention fake or external incubators.
+            4. For general conversational requests (e.g. hello) or conceptual definitions (e.g. explaining what an incubator does), you can explain the concept generally, but make sure not to mention any custom incubators that are not in the provided Database Context.
             
             Database Context:
             {context_str}
@@ -1200,23 +1180,26 @@ Database Context:
             
     # Fallback 3: Local database keyword search summary
     markdown_result = f"### Ecosystem Assistant (Local Database Match Mode)\n\n"
-    markdown_result += f"The AI Assistant is running in local search mode. Based on your query keywords, here are the most relevant incubator records found in the platform database:\n\n"
-    markdown_result += "| Incubator Name | Location | Focus Sectors | Website |\n"
-    markdown_result += "| :--- | :--- | :--- | :--- |\n"
-    
-    for r in rows:
-        focus = "General"
-        if r["focus_areas"]:
-            try:
-                focus = ", ".join(json.loads(r["focus_areas"])[:3])
-            except:
-                focus = r["focus_areas"]
-        loc = f"{r['city'] or ''}, {r['state'] or ''}".strip(", ")
-        markdown_result += f"| **{r['name']}** | {loc or 'India'} | {focus} | {r['website'] or 'N/A'} |\n"
+    if no_matches_found:
+        markdown_result += "Based on the system database, I could not find matching records.\n"
+    else:
+        markdown_result += f"The AI Assistant is running in local search mode. Based on your query keywords, here are the most relevant incubator records found in the platform database:\n\n"
+        markdown_result += "| Incubator Name | Location | Focus Sectors | Website |\n"
+        markdown_result += "| :--- | :--- | :--- | :--- |\n"
         
-    markdown_result += "\n\n**Suggestions for next steps:**\n"
-    markdown_result += "- Click on the **Incubators Directory** tab to search and filter these records in detail.\n"
-    markdown_result += "- Double-check spelling of states or cities in your question for better query matching.\n"
+        for r in rows:
+            focus = "General"
+            if r["focus_areas"]:
+                try:
+                    focus = ", ".join(json.loads(r["focus_areas"])[:3])
+                except:
+                    focus = r["focus_areas"]
+            loc = f"{r['city'] or ''}, {r['state'] or ''}".strip(", ")
+            markdown_result += f"| **{r['name']}** | {loc or 'India'} | {focus} | {r['website'] or 'N/A'} |\n"
+            
+        markdown_result += "\n\n**Suggestions for next steps:**\n"
+        markdown_result += "- Click on the **Incubators Directory** tab to search and filter these records in detail.\n"
+        markdown_result += "- Double-check spelling of states or cities in your question for better query matching.\n"
     
     return {
         "status": "success",
@@ -1227,6 +1210,9 @@ Database Context:
 # Pydantic models for outreach
 class OutreachEmailRequest(BaseModel):
     lead_id: str
+    subject: Optional[str] = None
+    body: Optional[str] = None
+
 
 class OutreachReplyRequest(BaseModel):
     lead_id: str
@@ -1428,7 +1414,7 @@ def trigger_outreach_email(req: OutreachEmailRequest):
     smtp_port = os.environ.get("SMTP_PORT", "587")
     smtp_user = os.environ.get("SMTP_USER")
     smtp_pass = os.environ.get("SMTP_PASS")
-    sender_email = os.environ.get("SENDER_EMAIL") or smtp_user or "no-reply@rtmun.ac.in"
+    sender_email = os.environ.get("SENDER_EMAIL") or smtp_user or "no-reply@incubein.com"
     
     is_smtp_ready = smtp_host and smtp_user and smtp_pass and "your_email" not in smtp_user
     
@@ -1440,21 +1426,21 @@ def trigger_outreach_email(req: OutreachEmailRequest):
             from email.mime.text import MIMEText
             
             msg = MIMEMultipart("alternative")
-            msg["Subject"] = f"Academic Partnership Opportunity - RTMUN Innovation Ecosystem"
+            msg["Subject"] = req.subject or f"Academic Partnership Opportunity - Incubein Innovation Ecosystem"
             msg["From"] = sender_email
             msg["To"] = lead["email"]
             
-            body_text = f"""
+            body_text = req.body or f"""
 Dear Representative,
 
 We hope this email finds you well. 
 
-We are reaching out from the RTMUN Startup Platform regarding a potential Strategic Cooperation and Academic Collaboration. We would love to share a draft MoU agreement with your incubation center and explore mutually beneficial synergies.
+We are reaching out from the Incubein Foundation regarding a potential Strategic Cooperation and Academic Collaboration. We would love to share a draft MoU agreement with your incubation center and explore mutually beneficial synergies.
 
 Please reply to this email to confirm your interest and schedule an introductory virtual meeting.
 
 Sincerely,
-RTMUN Innovation Portal Admin
+Incubein Foundation Admin
             """
             msg.attach(MIMEText(body_text, "plain"))
             
@@ -1491,7 +1477,7 @@ def send_followup_email(lead_id: str, lead_name: str, lead_email: str, followup_
     smtp_port = os.environ.get("SMTP_PORT", "587")
     smtp_user = os.environ.get("SMTP_USER")
     smtp_pass = os.environ.get("SMTP_PASS")
-    sender_email = os.environ.get("SENDER_EMAIL") or smtp_user or "no-reply@rtmun.ac.in"
+    sender_email = os.environ.get("SENDER_EMAIL") or smtp_user or "no-reply@incubein.com"
     
     if smtp_user:
         smtp_user = smtp_user.strip().strip('"').strip("'")
@@ -1503,20 +1489,20 @@ def send_followup_email(lead_id: str, lead_name: str, lead_email: str, followup_
     is_smtp_ready = smtp_host and smtp_user and smtp_pass and "your_email" not in smtp_user
     email_sent_successfully = False
     
-    subject = f"Following up: Academic Partnership Opportunity - RTMUN Innovation Ecosystem (Follow-up #{followup_number})"
+    subject = f"Following up: Academic Partnership Opportunity - Incubein Innovation Ecosystem (Follow-up #{followup_number})"
     
     body_text = f"""Dear Representative,
 
 We hope this email finds you well. 
 
-We are writing to follow up on our previous email regarding a potential Strategic Cooperation and Academic Collaboration between the RTMUN Startup Platform and your incubation center.
+We are writing to follow up on our previous email regarding a potential Strategic Cooperation and Academic Collaboration between the Incubein Foundation and your incubation center.
 
 We would love to share a draft MoU agreement with your incubation center and explore mutually beneficial synergies.
 
 Please reply to this email to confirm your interest and schedule an introductory virtual meeting.
 
 Sincerely,
-RTMUN Innovation Portal Admin
+Incubein Foundation Admin
 (Follow-up Reference #{followup_number})
 """
     
@@ -1524,7 +1510,7 @@ RTMUN Innovation Portal Admin
         try:
             msg = MIMEMultipart("alternative")
             msg["Subject"] = subject
-            msg["From"] = f"RTMUN Outreach <{sender_email}>"
+            msg["From"] = f"Incubein Outreach <{sender_email}>"
             msg["To"] = lead_email
             
             msg.attach(MIMEText(body_text, "plain"))
@@ -1709,6 +1695,9 @@ def process_reply(lead_id: str, reply_text: str):
     intent = "Neutral"
     score = 50
     summary = "Acknowledge receipt and waiting for more context."
+    sentiment = "Neutral"
+    urgency = "Low"
+    reason_code = "Other"
     
     analyzed = False
     cleaned_reply = clean_email_reply(reply_text)
@@ -1718,11 +1707,14 @@ def process_reply(lead_id: str, reply_text: str):
         try:
             import requests
             prompt = f"""
-            You are the AI Intent Classifier for the Indian Startup Ecosystem Outreach System.
+            You are the AI Intent Classifier and Sentiment Analyzer for the Indian Startup Ecosystem Outreach System.
             Analyze the following email reply from an incubator and output a JSON object containing:
             1. "intent": One of "Positive", "Neutral", "Negative", "Information Request"
             2. "score": An interest score from 0 to 100 representing how eager they are to collaborate/arrange a meeting. (e.g. "we would love to meet" = 90+, "tell me more" = 60-79, "no thanks" = <30).
             3. "summary": A 1-sentence summary of their response.
+            4. "sentiment": One of "Highly Interested", "Tentative", "Uninterested", "Requires Clarification"
+            5. "urgency": One of "High", "Medium", "Low"
+            6. "reason_code": One of "Wants to meet", "Wants more details", "Too busy/Not now", "Wrong contact person", "Not interested", "Other"
             
             Reply text: "{cleaned_reply}"
             
@@ -1765,6 +1757,9 @@ def process_reply(lead_id: str, reply_text: str):
                         intent = res.get("intent", intent)
                         score = int(res.get("score", score))
                         summary = res.get("summary", summary)
+                        sentiment = res.get("sentiment", sentiment)
+                        urgency = res.get("urgency", urgency)
+                        reason_code = res.get("reason_code", reason_code)
                         analyzed = True
                         print(f"OpenRouter analyzed reply successfully using {model}.")
                         break
@@ -1781,11 +1776,14 @@ def process_reply(lead_id: str, reply_text: str):
             model = genai.GenerativeModel('gemini-1.5-flash')
             
             prompt = f"""
-            You are the AI Intent Classifier for the Indian Startup Ecosystem Outreach System.
+            You are the AI Intent Classifier and Sentiment Analyzer for the Indian Startup Ecosystem Outreach System.
             Analyze the following email reply from an incubator and output a JSON object containing:
             1. "intent": One of "Positive", "Neutral", "Negative", "Information Request"
             2. "score": An interest score from 0 to 100 representing how eager they are to collaborate/arrange a meeting. (e.g. "we would love to meet" = 90+, "tell me more" = 60-79, "no thanks" = <30).
             3. "summary": A 1-sentence summary of their response.
+            4. "sentiment": One of "Highly Interested", "Tentative", "Uninterested", "Requires Clarification"
+            5. "urgency": One of "High", "Medium", "Low"
+            6. "reason_code": One of "Wants to meet", "Wants more details", "Too busy/Not now", "Wrong contact person", "Not interested", "Other"
             
             Reply text: "{cleaned_reply}"
             
@@ -1802,6 +1800,9 @@ def process_reply(lead_id: str, reply_text: str):
             intent = res.get("intent", intent)
             score = int(res.get("score", score))
             summary = res.get("summary", summary)
+            sentiment = res.get("sentiment", sentiment)
+            urgency = res.get("urgency", urgency)
+            reason_code = res.get("reason_code", reason_code)
             analyzed = True
         except Exception as e:
             print("Gemini analysis error:", e)
@@ -1857,14 +1858,23 @@ def process_reply(lead_id: str, reply_text: str):
             intent = "Negative"
             score = 15
             summary = "Declined the collaboration proposal."
+            sentiment = "Uninterested"
+            urgency = "Low"
+            reason_code = "Not interested"
         elif any(re.search(pat, reply_lower) for pat in positive_keywords):
             intent = "Positive"
             score = 90
             summary = "Expressed strong interest and requested to schedule a meeting."
+            sentiment = "Highly Interested"
+            urgency = "High"
+            reason_code = "Wants to meet"
         elif any(re.search(pat, reply_lower) for pat in info_keywords):
             intent = "Information Request"
             score = 70
             summary = "Requested additional information or documentation."
+            sentiment = "Tentative"
+            urgency = "Medium"
+            reason_code = "Wants more details"
             
     meeting_details = None
     meeting_link = None
@@ -1883,7 +1893,10 @@ def process_reply(lead_id: str, reply_text: str):
             intent_classification = ?, 
             lead_score = ?,
             meeting_link = ?,
-            meeting_scheduled_at = ?
+            meeting_scheduled_at = ?,
+            reply_sentiment = ?,
+            reply_urgency = ?,
+            reply_reason = ?
         WHERE id = ?
     ''', (
         new_status,
@@ -1893,6 +1906,9 @@ def process_reply(lead_id: str, reply_text: str):
         score,
         meeting_link if meeting_link else lead["meeting_link"],
         meeting_scheduled_at if meeting_scheduled_at else lead["meeting_scheduled_at"],
+        sentiment,
+        urgency,
+        reason_code,
         lead_id
     ))
     
@@ -1905,6 +1921,9 @@ def process_reply(lead_id: str, reply_text: str):
         "intent": intent,
         "score": score,
         "summary": summary,
+        "sentiment": sentiment,
+        "urgency": urgency,
+        "reason_code": reason_code,
         "meeting": meeting_details
     }
 
@@ -2082,16 +2101,35 @@ def create_gmeet_event(summary: str, description: str, date_str: str, time_str: 
     import os
     import uuid
     from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request
     from googleapiclient.discovery import build
     from datetime import datetime, timedelta
     
     token_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "token.json")
     if not os.path.exists(token_path):
-        print(f"Token file not found at {token_path}. Skipping API event scheduling.")
+        print(f"Token file not found at {token_path}. OAuth not authorized — please authorize via the dashboard first.")
         return None
         
     try:
         credentials = Credentials.from_authorized_user_file(token_path)
+        
+        # Auto-refresh expired credentials using the stored refresh_token
+        if credentials.expired and credentials.refresh_token:
+            try:
+                credentials.refresh(Request())
+                # Persist the refreshed token
+                with open(token_path, "w") as tf:
+                    tf.write(credentials.to_json())
+                print("Google OAuth token refreshed and saved successfully.")
+            except Exception as refresh_err:
+                print(f"Token refresh failed: {refresh_err}. Deleting invalid token — please re-authorize via the dashboard.")
+                os.remove(token_path)
+                return None
+        
+        if not credentials.valid:
+            print("Google credentials are invalid and could not be refreshed.")
+            return None
+        
         service = build("calendar", "v3", credentials=credentials)
         
         try:
@@ -2183,14 +2221,14 @@ def generate_ics_file_content(summary: str, description: str, date_str: str, tim
     ics_lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
-        "PRODID:-//RTMUN Startup Platform//EN",
+        "PRODID:-//Incubein Foundation//EN",
         "CALSCALE:GREGORIAN",
         "METHOD:REQUEST",
         "BEGIN:VEVENT",
         f"DTSTART:{start_str}",
         f"DTEND:{end_str}",
         f"DTSTAMP:{dtstamp_str}",
-        f"ORGANIZER;CN=RTMUN Admin:mailto:{organizer_email}",
+        f"ORGANIZER;CN=Incubein Admin:mailto:{organizer_email}",
         f"ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN={attendee_email}:mailto:{attendee_email}",
         f"UID:{uid}",
         f"SUMMARY:{esc_summary}",
@@ -2221,7 +2259,7 @@ def send_meeting_invite_email(lead_name: str, lead_email: str, date_str: str, ti
     smtp_port = os.environ.get("SMTP_PORT", "587")
     smtp_user = os.environ.get("SMTP_USER")
     smtp_pass = os.environ.get("SMTP_PASS")
-    sender_email = os.environ.get("SENDER_EMAIL") or smtp_user or "no-reply@rtmun.ac.in"
+    sender_email = os.environ.get("SENDER_EMAIL") or smtp_user or "no-reply@incubein.com"
     
     if smtp_user:
         smtp_user = smtp_user.strip().strip('"').strip("'")
@@ -2238,7 +2276,7 @@ def send_meeting_invite_email(lead_name: str, lead_email: str, date_str: str, ti
     try:
         msg = MIMEMultipart("mixed")
         msg["Subject"] = f"Invitation: MOU Collaboration Discussion @ {date_str} {time_str}"
-        msg["From"] = f"RTMUN Outreach <{sender_email}>"
+        msg["From"] = f"Incubein Outreach <{sender_email}>"
         msg["To"] = lead_email
         
         summary = f"MOU Collaboration: {lead_name}"
@@ -2278,7 +2316,7 @@ def send_meeting_invite_email(lead_name: str, lead_email: str, date_str: str, ti
                     </div>
                     
                     <p>An interactive calendar invite has been attached to this email. You can RSVP directly using your email client's RSVP/buttons.</p>
-                    <p>Sincerely,<br><strong>RTMUN Innovation Portal Outreach Team</strong></p>
+                    <p>Sincerely,<br><strong>Incubein Foundation Outreach Team</strong></p>
                 </div>
             </body>
         </html>
@@ -2327,6 +2365,7 @@ oauth_states = {}
 @app.get("/api/outreach/authorize")
 def google_authorize():
     from google_auth_oauthlib.flow import Flow
+    from fastapi.responses import RedirectResponse
     config = get_google_client_config()
     if not config:
         raise HTTPException(
@@ -2347,7 +2386,35 @@ def google_authorize():
         )
         # Store code_verifier using state as the key
         oauth_states[state] = flow.code_verifier
+        # Return both a redirect AND the URL for flexibility
         return {"authorization_url": authorization_url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate authorization URL: {str(e)}")
+
+@app.get("/api/outreach/google/auth")
+def google_auth_alias():
+    """Alias route — same as /api/outreach/authorize. Redirects browser directly to Google OAuth."""
+    from google_auth_oauthlib.flow import Flow
+    from fastapi.responses import RedirectResponse
+    config = get_google_client_config()
+    if not config:
+        raise HTTPException(
+            status_code=400,
+            detail="Google OAuth credentials not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in backend/.env."
+        )
+    try:
+        flow = Flow.from_client_config(
+            config,
+            scopes=["https://www.googleapis.com/auth/calendar.events"]
+        )
+        flow.redirect_uri = config["web"]["redirect_uris"][0]
+        authorization_url, state = flow.authorization_url(
+            access_type='offline',
+            include_granted_scopes='true',
+            prompt='consent'
+        )
+        oauth_states[state] = flow.code_verifier
+        return RedirectResponse(authorization_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate authorization URL: {str(e)}")
 
@@ -2384,7 +2451,7 @@ def google_oauth2callback(code: str, state: Optional[str] = None, error: Optiona
             <body style="font-family: sans-serif; text-align: center; padding-top: 5rem; background: #f8f9ff;">
                 <h2 style="color: #10b981;">✓ Google Calendar Authorization Successful!</h2>
                 <p>The outreach automation system has been authorized to schedule Google Meet meetings.</p>
-                <p style="color: #6b7280; font-size: 0.9rem;">You can close this tab and return to the RTMUN dashboard.</p>
+                <p style="color: #6b7280; font-size: 0.9rem;">You can close this tab and return to the Incubein dashboard.</p>
                 <script>
                     setTimeout(() => { window.close(); }, 5000);
                 </script>
@@ -2629,5 +2696,337 @@ def start_imap_checking_loop():
 @app.on_event("startup")
 def on_startup():
     start_imap_checking_loop()
+
+
+# ─── INCUBEIN Cohort Evaluator Endpoints ──────────────────────
+from fastapi import UploadFile, File
+import io
+from .evaluator import (
+    encrypt_val,
+    decrypt_val,
+    clean_revenue,
+    clean_team_size,
+    clean_dpiit,
+    map_excel_headers,
+    evaluate_rules,
+    evaluate_llm,
+    compute_similarity_matrix
+)
+from .database import get_mongo_db
+
+@app.post("/api/incubein/upload")
+async def upload_cohort_excel(file: UploadFile = File(...)):
+    try:
+        contents = await file.read()
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(contents), data_only=True)
+        sheet = wb.active
+        
+        # Read header row
+        headers = [cell.value for cell in sheet[1]]
+        header_map = map_excel_headers(headers)
+        
+        if "startup_name" not in header_map and "company_registered_name" not in header_map:
+            raise HTTPException(status_code=400, detail="Could not identify Startup/Company Name column in the Excel file.")
+            
+        startups = []
+        # Process rows
+        for row_idx in range(2, sheet.max_row + 1):
+            row_values = [sheet.cell(row=row_idx, column=col_idx).value for col_idx in range(1, len(headers) + 1)]
+            # Check if empty row
+            if not any(row_values):
+                continue
+                
+            def get_col_val(key):
+                idx = header_map.get(key)
+                if idx is not None and idx < len(row_values):
+                    return row_values[idx]
+                return None
+
+            startup_name = get_col_val("startup_name") or get_col_val("company_registered_name")
+            if not startup_name:
+                continue # Skip unnamed rows
+                
+            dpiit_registered_val = get_col_val("dpiit_registered")
+            has_dpiit, dpiit_num = clean_dpiit(dpiit_registered_val)
+            
+            raw_rev = get_col_val("revenue")
+            rev_val = clean_revenue(raw_rev)
+            
+            raw_team = get_col_val("team_size")
+            team_size_val = clean_team_size(raw_team)
+            
+            # Non-PII Dict for processing
+            startup_data = {
+                "id_temp": f"temp_{row_idx}",
+                "startup_name": str(startup_name).strip(),
+                "sector": str(get_col_val("sector") or "General").strip(),
+                "stage": str(get_col_val("stage") or "Idea").strip(),
+                "revenue": rev_val,
+                "team_size": team_size_val,
+                "dpiit": has_dpiit,
+                "dpiit_number": dpiit_num,
+                "website": str(get_col_val("website") or "").strip(),
+                "pitch_deck_url": str(get_col_val("pitch_deck_url") or "").strip(),
+                "business_summary": str(get_col_val("business_summary") or "").strip(),
+                "competitors": str(get_col_val("competitors") or "").strip(),
+                "applied_other": str(get_col_val("applied_other") or "").strip(),
+                "litigation": str(get_col_val("litigation") or "").strip(),
+                "highest_qualification": str(get_col_val("highest_qualification") or "").strip(),
+                "school_university": str(get_col_val("school_university") or "").strip(),
+                "gender": str(get_col_val("gender") or "").strip(),
+                "city_state": str(get_col_val("city_state") or "").strip(),
+                "comments": str(get_col_val("comments") or "").strip(),
+                "legal_entity": str(get_col_val("legal_entity") or "").strip(),
+                "applying_for": str(get_col_val("applying_for") or "").strip(),
+                "timestamp": str(get_col_val("timestamp") or "").strip(),
+            }
+            
+            # Rule Engine
+            rule_score, rule_breakdown = evaluate_rules(startup_data)
+            startup_data["rule_score"] = rule_score
+            startup_data["rule_breakdown"] = rule_breakdown
+            
+            # LLM Evaluation (Disabled/Removed for startups)
+            startup_data["llm_score"] = 0.0
+            startup_data["evaluation"] = {
+                "innovation": 0,
+                "market": 0,
+                "scalability": 0,
+                "execution": 0,
+                "problem": 0,
+                "strengths": ["AI evaluation disabled for cohort startups"],
+                "weaknesses": [],
+                "recommendation": "Rule-scored"
+            }
+            
+            # Calculate final score (100% based on rule engine score)
+            startup_data["final_score"] = round(rule_score, 1)
+
+
+            
+            # Sensitive fields to encrypt
+            startup_data["encrypted_fields"] = {
+                "name": encrypt_val(get_col_val("name")),
+                "email": encrypt_val(get_col_val("email")),
+                "mobile": encrypt_val(get_col_val("mobile")),
+                "alternet_mobile": encrypt_val(get_col_val("alternet_mobile")),
+                "dob": encrypt_val(get_col_val("dob")),
+                "address": encrypt_val(get_col_val("address")),
+            }
+            
+            startups.append(startup_data)
+            
+        if not startups:
+            return {"status": "error", "message": "No valid startup rows processed."}
+            
+        # Compute similarity matrix
+        startups = compute_similarity_matrix(startups)
+        
+        # Sort and assign rank
+        startups.sort(key=lambda x: x["final_score"], reverse=True)
+        for rank_idx, s in enumerate(startups):
+            s["rank"] = rank_idx + 1
+            # Remove temp id
+            if "id_temp" in s:
+                del s["id_temp"]
+                
+        # Save to MongoDB
+        db = get_mongo_db()
+        db["incubein_applications"].delete_many({})
+        db["incubein_applications"].insert_many(startups)
+        
+        return {"status": "success", "message": f"Successfully processed and stored {len(startups)} startup applications."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process cohort excel: {str(e)}")
+
+@app.get("/api/incubein/applications")
+def get_incubein_applications():
+    try:
+        db = get_mongo_db()
+        cursor = db["incubein_applications"].find({}).sort("rank", 1)
+        applications = []
+        for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            
+            # Decrypt sensitive fields on the fly
+            enc = doc.get("encrypted_fields", {})
+            doc["name"] = decrypt_val(enc.get("name", ""))
+            doc["email"] = decrypt_val(enc.get("email", ""))
+            doc["mobile"] = decrypt_val(enc.get("mobile", ""))
+            doc["alternet_mobile"] = decrypt_val(enc.get("alternet_mobile", ""))
+            doc["dob"] = decrypt_val(enc.get("dob", ""))
+            doc["address"] = decrypt_val(enc.get("address", ""))
+            
+            if "encrypted_fields" in doc:
+                del doc["encrypted_fields"]
+                
+            applications.append(doc)
+        return applications
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/incubein/delete")
+def delete_incubein_applications():
+    try:
+        db = get_mongo_db()
+        db["incubein_applications"].delete_many({})
+        return {"status": "success", "message": "All startup applications cleared successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class AddCohortToEcosystemRequest(BaseModel):
+    app_ids: List[str]
+    all: bool
+
+@app.post("/api/incubein/add-to-db")
+def add_cohort_to_database(req: AddCohortToEcosystemRequest):
+    try:
+        db = get_mongo_db()
+        from bson import ObjectId
+        import datetime
+        
+        if req.all:
+            query = {}
+        else:
+            # Parse object ids safely
+            parsed_ids = []
+            for aid in req.app_ids:
+                try:
+                    parsed_ids.append(ObjectId(aid))
+                except:
+                    pass
+            query = {"_id": {"$in": parsed_ids}}
+            
+        cursor = db["incubein_applications"].find(query)
+        
+        inserted_count = 0
+        for doc in cursor:
+            # Decrypt name
+            enc = doc.get("encrypted_fields", {})
+            founder_name = decrypt_val(enc.get("name", ""))
+            
+            # Prepare startup record
+            startup_record = {
+                "startup_name": doc["startup_name"],
+                "sector": doc["sector"],
+                "founders": founder_name,
+                "website": doc["website"],
+                "funding_stage": doc["stage"],
+                "hq_city": doc["city_state"].split(",")[0].strip() if doc["city_state"] else "Unknown",
+                "incubated_at": datetime.datetime.now().strftime("%Y-%m-%d"),
+                "incubator_id": "incubein_cohort",
+                "confidence_score": doc["final_score"],
+                "status": "Shortlisted",
+                "last_updated": datetime.datetime.now().isoformat(),
+                "source_url": "Cohort Excel Upload"
+            }
+            
+            # Check duplicate by name
+            existing = db["startups"].find_one({"startup_name": doc["startup_name"]})
+            if not existing:
+                # Find maximum numeric ID
+                max_id = 1
+                try:
+                    all_ids = []
+                    for st_doc in db["startups"].find({}, {"id": 1}):
+                        id_val = st_doc.get("id")
+                        if id_val:
+                            if isinstance(id_val, int):
+                                all_ids.append(id_val)
+                            elif isinstance(id_val, str) and id_val.isdigit():
+                                all_ids.append(int(id_val))
+                    if all_ids:
+                        max_id = max(all_ids) + 1
+                except Exception as id_err:
+                    print("Error calculating max startup id:", id_err)
+                
+                startup_record["id"] = str(max_id)
+                db["startups"].insert_one(startup_record)
+                inserted_count += 1
+                
+        return {"status": "success", "message": f"Successfully imported {inserted_count} startups into the ecosystem directory."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/incubein/add-to-campaigns")
+def add_cohort_to_campaigns(req: AddCohortToEcosystemRequest):
+    try:
+        db = get_mongo_db()
+        from bson import ObjectId
+        import uuid
+        
+        if req.all:
+            query = {}
+        else:
+            parsed_ids = []
+            for aid in req.app_ids:
+                try:
+                    parsed_ids.append(ObjectId(aid))
+                except:
+                    pass
+            query = {"_id": {"$in": parsed_ids}}
+            
+        cursor = db["incubein_applications"].find(query)
+        
+        inserted_count = 0
+        for doc in cursor:
+            enc = doc.get("encrypted_fields", {})
+            email = decrypt_val(enc.get("email", ""))
+            
+            if not email:
+                continue
+                
+            # Check duplicate in outreach_leads
+            existing = db["outreach_leads"].find_one({"email": email})
+            if not existing:
+                lead_id = str(uuid.uuid4())[:8]
+                lead_record = {
+                    "id": lead_id,
+                    "incubator_id": "incubein_cohort",
+                    "incubator_name": doc["startup_name"],
+                    "email": email,
+                    "status": "New",
+                    "lead_score": int(doc["final_score"]),
+                    "notes": f"Cohort Application. Sector: {doc['sector']}. Stage: {doc['stage']}. Final Score: {doc['final_score']}."
+                }
+                db["outreach_leads"].insert_one(lead_record)
+                inserted_count += 1
+                
+        return {"status": "success", "message": f"Successfully added {inserted_count} startups to the outreach campaign leads."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/outreach/clear-startups")
+def clear_startup_campaigns():
+    try:
+        db = get_mongo_db()
+        res = db["outreach_leads"].delete_many({"incubator_id": "incubein_cohort"})
+        return {"status": "success", "message": f"Cleared {res.deleted_count} startup campaign leads successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/incubators/clear")
+def clear_incubators_directory():
+    try:
+        db = get_mongo_db()
+        res = db["incubators"].delete_many({})
+        return {"status": "success", "message": f"Successfully cleared {res.deleted_count} incubators from the directory."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/startups/clear")
+def clear_startups_directory():
+    try:
+        db = get_mongo_db()
+        res = db["startups"].delete_many({})
+        return {"status": "success", "message": f"Successfully cleared {res.deleted_count} startups from the directory."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
 
 

@@ -180,7 +180,7 @@ export default function MouGenerator({ preselectedIncubatorName }) {
   const [signatureData, setSignatureData] = useState(null);
   
   // Email sending states
-  const [emailRecipient, setEmailRecipient] = useState("abcd@rtmun.ac.in");
+  const [emailRecipient, setEmailRecipient] = useState("contact@incubein.com");
   const [sendingEmail, setSendingEmail] = useState(false);
   const [emailStatus, setEmailStatus] = useState(null); // { type: 'success'|'error'|'mock', message: '' }
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -191,7 +191,7 @@ export default function MouGenerator({ preselectedIncubatorName }) {
   useEffect(() => {
     const fetchIncubators = async () => {
       try {
-        const res = await fetch("http://127.0.0.1:8000/api/incubators");
+        const res = await fetch("/api/incubators");
         const data = await res.json();
         setIncubators(data);
         
@@ -551,7 +551,7 @@ export default function MouGenerator({ preselectedIncubatorName }) {
     };
 
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/mou/send", {
+      const res = await fetch("/api/mou/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(postData)

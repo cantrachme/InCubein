@@ -1,0 +1,10 @@
+Timestamp: 2026-06-24T21:12:58.320521
+Recipient: receiver@domain.com
+Subject: Digitally Executed MOU: MEMORANDUM OF UNDERSTANDING FOR STARTUP INCUBATION
+Party A: SINE IIT Bombay (sine@iitb.ac.in)
+Party B: My Startup Ltd (mystartup@domain.com)
+MOU Title: MEMORANDUM OF UNDERSTANDING FOR STARTUP INCUBATION
+--------------------------------------------------------------------------------
+This is the draft agreement text.
+--------------------------------------------------------------------------------
+Digital Signature Image Base64 Data URL Length: 118 chars

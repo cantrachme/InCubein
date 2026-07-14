@@ -1,0 +1,7 @@
+Timestamp: 2026-06-24T21:12:58.287639
+Recipient: sine@iitb.ac.in (SINE IIT Bombay)
+Subject: Test Scheduler Subject
+Meeting: 2026-07-01 at 14:00
+--------------------------------------------------------------------------------
+This is a verification test message.
+--------------------------------------------------------------------------------

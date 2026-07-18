@@ -200,179 +200,110 @@ def evaluate_rules(startup: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
     
     return round(normalized_score, 1), scores
 
-def evaluate_llm(startup: Dict[str, Any]) -> Dict[str, Any]:
-    prompt = f"""
-    You are an expert venture capitalist and startup incubator evaluator for the INCUBEIN Startup Program.
-    Evaluate the following startup application based ONLY on the non-PII fields:
-    
-    Sector: {startup.get('sector')}
-    Stage: {startup.get('stage')}
-    Team Size: {startup.get('team_size')}
-    Competitors: {startup.get('competitors')}
-    Business Summary: {startup.get('business_summary')}
-    
-    Please rate the startup out of 20 points for each of the following 5 criteria:
-    1. innovation: Originality, unique value proposition, technology defensibility.
-    2. market: Market size, target audience, commercial viability.
-    3. scalability: Potential to scale, business model viability, growth rate potential.
-    4. execution: Team capabilities, product stage, execution feasibility.
-    5. problem: Pain point severity, customer demand, clarity of problem statement.
-    
-    Provide:
-    1. A list of 2-3 key Strengths.
-    2. A list of 2-3 key Weaknesses/Risks.
-    3. A final Recommendation (one of: "Highly Recommended", "Recommended", "Consider with Reservations", "Not Recommended").
-    
-    Respond ONLY with a valid JSON object matching this schema:
-    {{
-        "innovation": 18,
-        "market": 15,
-        "scalability": 16,
-        "execution": 14,
-        "problem": 17,
-        "strengths": ["Strength 1", "Strength 2"],
-        "weaknesses": ["Weakness 1", "Weakness 2"],
-        "recommendation": "Highly Recommended"
-    }}
+def evaluate_advanced_heuristics(startup: Dict[str, Any]) -> Dict[str, Any]:
     """
-
-    # 1. Try OpenRouter First
-    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
-    if openrouter_key and "your_openrouter" not in openrouter_key:
-        import requests
-        models_to_try = [
-            "google/gemini-2.5-flash",
-            "meta-llama/llama-3-8b-instruct:free",
-            "google/gemma-2-9b-it:free"
-        ]
+    Advanced Non-AI heuristic engine to evaluate a startup.
+    Returns the same schema as the LLM would.
+    """
+    summary = str(startup.get("business_summary") or "").lower()
+    sector = str(startup.get("sector") or "").lower()
+    competitors = str(startup.get("competitors") or "").lower()
+    team_size = int(startup.get("team_size") or 1)
+    revenue = float(startup.get("revenue") or 0.0)
+    stage = str(startup.get("stage") or "").lower()
+    website = str(startup.get("website") or "").strip()
+    dpiit = startup.get("dpiit", False)
+    
+    innovation = 10
+    market = 10
+    scalability = 10
+    execution = 10
+    problem = 10
+    
+    strengths = []
+    weaknesses = []
+    
+    # 1. Market & Scalability
+    if "tech" in sector or "ai" in sector or "ml" in sector or "software" in sector or "saas" in sector:
+        market += 4
+        scalability += 5
+        strengths.append("High-growth potential tech sector")
+    elif "health" in sector or "medical" in sector or "agri" in sector or "climate" in sector:
+        market += 5
+        scalability += 3
+        strengths.append("Addresses critical, large-scale sector")
+    else:
+        market += 2
+        scalability += 2
         
-        for model in models_to_try:
-            try:
-                response = requests.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {openrouter_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": model,
-                        "messages": [
-                            {"role": "user", "content": prompt}
-                        ],
-                        "temperature": 0.1
-                    },
-                    timeout=15
-                )
-                if response.status_code == 200:
-                    result_data = response.json()
-                    result_text = result_data["choices"][0]["message"]["content"].strip()
-                    
-                    if "```json" in result_text:
-                        result_text = result_text.split("```json")[1].split("```")[0].strip()
-                    elif "```" in result_text:
-                        try:
-                            result_text = result_text.split("```")[1].split("```")[0].strip()
-                        except:
-                            pass
-                    
-                    res = json.loads(result_text)
-                    total_llm_score = (
-                        res.get("innovation", 0) +
-                        res.get("market", 0) +
-                        res.get("scalability", 0) +
-                        res.get("execution", 0) +
-                        res.get("problem", 0)
-                    )
-                    res["llm_score"] = float(total_llm_score)
-                    print(f"OpenRouter evaluated successfully using {model}.")
-                    return res
-            except Exception as or_err:
-                print(f"OpenRouter model {model} failed: {or_err}")
-
-    # 2. Try Gemini Library Fallback
-    gemini_key = os.environ.get("GEMINI_API_KEY")
-    if gemini_key and "your_gemini" not in gemini_key:
-        try:
-            import google.generativeai as genai
-            genai.configure(api_key=gemini_key)
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            
-            response = model.generate_content(prompt)
-            text = response.text.strip()
-            if text.startswith("```json"):
-                text = text[7:]
-            if text.endswith("```"):
-                text = text[:-3]
-            text = text.strip()
-            
-            res = json.loads(text)
-            total_llm_score = (
-                res.get("innovation", 0) +
-                res.get("market", 0) +
-                res.get("scalability", 0) +
-                res.get("execution", 0) +
-                res.get("problem", 0)
-            )
-            res["llm_score"] = float(total_llm_score)
-            print("Gemini evaluated successfully.")
-            return res
-        except Exception as e:
-            print(f"Error in Gemini library evaluation fallback: {e}")
-
-    # 3. Final Fallback to Skipped State
-    print("AI keys failed or missing, skipping AI analysis.")
-    return {
-        "innovation": 0,
-        "market": 0,
-        "scalability": 0,
-        "execution": 0,
-        "problem": 0,
-        "strengths": ["AI analysis skipped / unavailable"],
-        "weaknesses": [],
-        "recommendation": "Pending review",
-        "llm_score": 0.0
-    }
-
-
-
-def get_mock_llm_evaluation(startup: Dict[str, Any]) -> Dict[str, Any]:
-    summary = startup.get("business_summary", "").lower()
-    sector = startup.get("sector", "").lower()
-    
-    innovation = 12
-    market = 13
-    scalability = 12
-    execution = 13
-    problem = 14
-    
-    strengths = ["Clever concept in sector", "Has clear team structure"]
-    weaknesses = ["Needs market validation", "Early stage market dynamics"]
-    
-    if "ai" in summary or "ml" in summary or "intelligence" in summary:
-        innovation = 17
-        market = 16
-        scalability = 17
-        strengths = ["Leverages AI/ML for automated operations", "Scalable product-led growth model", "Low initial capital expenditure"]
-        weaknesses = ["High data dependency", "Highly competitive AI space"]
-    elif "health" in sector or "medical" in sector:
-        problem = 18
-        market = 15
-        scalability = 14
-        strengths = ["Addresses high-impact healthcare pain points", "Strong social and economic value", "Experienced founder interest"]
-        weaknesses = ["Regulatory approvals could slow progress", "Long sales cycle to hospitals"]
-    elif "agri" in sector or "farm" in summary:
-        market = 16
-        execution = 15
-        problem = 17
-        strengths = ["Targets large underserved rural market", "Direct-to-farmer support channel", "Simple localized solution"]
-        weaknesses = ["High logistics overhead", "Seasonal and weather dependency"]
+    if competitors and len(competitors) > 5 and "none" not in competitors:
+        market += 3
+        strengths.append("Aware of competitive landscape")
+    else:
+        weaknesses.append("Lack of competitor awareness or no clear competitors mentioned")
         
+    # 2. Innovation & Problem
+    if "ai " in summary or "ml " in summary or "patent" in summary or "proprietary" in summary:
+        innovation += 6
+        strengths.append("Strong focus on innovation/IP")
+    elif len(summary.split()) > 30:
+        innovation += 3
+        problem += 4
+        strengths.append("Detailed business summary and problem statement")
+    else:
+        weaknesses.append("Vague or overly brief business summary")
+        
+    if dpiit:
+        innovation += 2
+        problem += 3
+        strengths.append("DPIIT Recognized (Validated startup)")
+        
+    # 3. Execution (Traction & Readiness)
+    if revenue > 0:
+        execution += 8
+        strengths.append("Demonstrated revenue traction")
+    elif "revenue" in stage or "traction" in stage or "growth" in stage:
+        execution += 6
+        strengths.append("Reported traction stage")
+    elif "mvp" in stage or "prototype" in stage:
+        execution += 4
+        strengths.append("Product development is underway")
+    else:
+        weaknesses.append("Early stage with unproven execution")
+        
+    if team_size > 1:
+        execution += 2
+        strengths.append("Has a co-founding team/multiple members")
+    else:
+        weaknesses.append("Solo founder risk")
+        
+    if website:
+        scalability += 2
+    else:
+        weaknesses.append("Lacks digital presence (no website)")
+        
+    # Cap scores at 20
+    innovation = min(20, innovation)
+    market = min(20, market)
+    scalability = min(20, scalability)
+    execution = min(20, execution)
+    problem = min(20, problem)
+    
     total = innovation + market + scalability + execution + problem
-    recommendation = "Recommended"
+    
     if total >= 80:
         recommendation = "Highly Recommended"
-    elif total < 65:
+    elif total >= 65:
+        recommendation = "Recommended"
+    elif total >= 50:
         recommendation = "Consider with Reservations"
+    else:
+        recommendation = "Not Recommended"
+        
+    if not strengths:
+        strengths.append("No distinct strengths identified from provided data")
+    if not weaknesses:
+        weaknesses.append("No obvious weaknesses detected")
         
     return {
         "innovation": innovation,
@@ -380,8 +311,8 @@ def get_mock_llm_evaluation(startup: Dict[str, Any]) -> Dict[str, Any]:
         "scalability": scalability,
         "execution": execution,
         "problem": problem,
-        "strengths": strengths,
-        "weaknesses": weaknesses,
+        "strengths": strengths[:3],
+        "weaknesses": weaknesses[:3],
         "recommendation": recommendation,
         "llm_score": float(total)
     }

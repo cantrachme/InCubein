@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { toast } from "react-toastify";
 import { Search, MapPin, Globe, Mail, Send, X, ExternalLink, ShieldCheck, User, Trash2 } from "lucide-react";
 
@@ -75,7 +76,6 @@ export default function StartupsDirectory() {
       // Find the email dynamically. In standard scraped startups, they might have email,
       // for cohort startups they definitely had email. Let's send a request to add lead.
       // We can generate a dummy email founder@name.com if no email exists, or ask for email.
-      const defaultEmail = `${startup.founders?.toLowerCase().replace(/\s+/g, "") || "founder"}@${startup.startup_name.toLowerCase().replace(/[^a-z0-9]/g, "")}.com`;
       
       const res = await fetch("/api/outreach/add-lead", {
         method: "POST",
@@ -83,7 +83,7 @@ export default function StartupsDirectory() {
         body: JSON.stringify({
           incubator_id: "incubein_cohort",
           incubator_name: startup.startup_name,
-          email: defaultEmail
+          email: startup.contact_email || startup.email || ""
         })
       });
       const data = await res.json();
@@ -231,12 +231,12 @@ export default function StartupsDirectory() {
                 background: "white",
                 border: "1px solid var(--border-color)",
                 borderRadius: "var(--radius-lg)",
-                padding: "18px",
+                padding: "12px",
                 cursor: "pointer",
                 transition: "all var(--transition-base)",
                 display: "flex",
                 flexDirection: "column",
-                gap: "12px"
+                gap: "8px"
               }}
               className="card-hover"
             >
@@ -279,13 +279,24 @@ export default function StartupsDirectory() {
                   </span>
                 )}
               </div>
+              <div style={{ marginTop: "4px", display: "flex", justifyContent: "flex-end" }}>
+                <button
+                  className="btn btn-primary btn-icon"
+                  style={{ padding: "6px", fontSize: "0.8rem", background: "var(--primary-light)", color: "var(--primary)", borderRadius: "50%", width: "32px", height: "32px", display: "flex", alignItems: "center", justifyContent: "center" }}
+                  onClick={(e) => { e.stopPropagation(); handleAddToCampaign(st); }}
+                  disabled={addingToCampaign}
+                  title="Add to Campaign"
+                >
+                  {addingToCampaign ? "..." : "+"}
+                </button>
+              </div>
             </div>
           ))}
         </div>
       )}
 
       {/* ─── SLIDE OVER DRAWER ──────────────────────────────────── */}
-      {activeDrawerStartup && (
+      {activeDrawerStartup && createPortal(
         <div style={{
           position: "fixed",
           inset: 0,
@@ -405,7 +416,8 @@ export default function StartupsDirectory() {
             </div>
 
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
     </div>

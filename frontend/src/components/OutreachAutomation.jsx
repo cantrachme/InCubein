@@ -71,8 +71,31 @@ NOW, THEREFORE, THE PARTIES AGREE AS FOLLOWS:
 
 IN WITNESS WHEREOF, the Parties hereto have signed and executed this Memorandum of Understanding on the date and year first written above.`;
 
+
+const PREDEFINED_TEMPLATES = {
+  incubation: {
+    name: "Incubation Seat Offer",
+    subject: "INCUBEIN Cohort: Incubation Seat Offer - {StartupName}",
+    body: "Dear Founder,\n\nWe are pleased to inform you that {StartupName} has been selected for incubation in the INCUBEIN Startup Cohort!\n\nOur evaluation committee was highly impressed by your application. We will follow up shortly with formal onboarding details.\n\nBest regards,\nINCUBEIN Foundation Team"
+  },
+  deck_request: {
+    name: "Pitch Deck Request",
+    subject: "INCUBEIN Cohort: Pitch Deck Request - {StartupName}",
+    body: "Dear Founder,\n\nThank you for applying to the INCUBEIN Startup Program.\n\nWe have completed our initial screening. To assist in our final ranking, please reply with your latest presentation deck and financial roadmap.\n\nBest regards,\nINCUBEIN Foundation Team"
+  },
+  interview: {
+    name: "Selection Interview Invite",
+    subject: "INCUBEIN Cohort: Selection Interview - {StartupName}",
+    body: "Dear Founder,\n\nCongratulations! {StartupName} has shortlisted for the final interview phase of the INCUBEIN Cohort.\n\nPlease select a convenient slot to schedule a 15-minute pitch session with our selection committee.\n\nBest regards,\nINCUBEIN Foundation Team"
+  }
+};
+
 export default function OutreachAutomation({ preselectedIncubatorName, refreshTrigger }) {
   const [leads, setLeads] = useState([]);
+
+  const [targetType, setTargetType] = useState("incubators"); // 'incubators' or 'startups'
+  const [selectedTemplateKey, setSelectedTemplateKey] = useState("incubation");
+
   const [meetings, setMeetings] = useState([]);
   const [incubators, setIncubators] = useState([]);
   const [externalEvents, setExternalEvents] = useState([]);
@@ -144,6 +167,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   const [leadSearchQuery, setLeadSearchQuery] = useState("");
   const [leadSelectedStatus, setLeadSelectedStatus] = useState("");
   const [leadNotesInput, setLeadNotesInput] = useState("");
+  const [leadNextActionDateInput, setLeadNextActionDateInput] = useState("");
 
   // Unique filter lists extracted dynamically
   const regionsList = ["North", "South", "East", "West", "Central", "Northeast"];
@@ -233,10 +257,18 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   }, [dirSearchQuery, dirSelectedState, dirSelectedRegion, dirSelectedSector, dirMinStars]);
 
   // Filter campaign leads
+  // Filter campaign leads
   const filteredLeads = leads.filter(lead => {
+    // Target Type filtering
+    if (targetType === "startups") {
+      if (lead.incubator_id !== "incubein_cohort") return false;
+    } else {
+      if (lead.incubator_id === "incubein_cohort") return false;
+    }
+
     if (leadSearchQuery && 
         !lead.incubator_name.toLowerCase().includes(leadSearchQuery.toLowerCase()) && 
-        !lead.email.toLowerCase().includes(leadSearchQuery.toLowerCase())) {
+        !(lead.email || "").toLowerCase().includes(leadSearchQuery.toLowerCase())) {
       return false;
     }
     if (leadSelectedStatus && lead.status !== leadSelectedStatus) {
@@ -262,8 +294,10 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   useEffect(() => {
     if (selectedLeadForDetail) {
       setLeadNotesInput(selectedLeadForDetail.notes || "");
+      setLeadNextActionDateInput(selectedLeadForDetail.next_action_date || "");
     } else {
       setLeadNotesInput("");
+      setLeadNextActionDateInput("");
     }
   }, [selectedLeadForDetail]);
 
@@ -289,21 +323,21 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   const fetchData = async () => {
     setLoading(true);
     try {
-      const leadsRes = await fetch("/api/outreach/leads");
+      const leadsRes = await fetch("/api/outreach/leads", { cache: "no-store" });
       const leadsData = await leadsRes.json();
       setLeads(leadsData);
       
-      const meetingsRes = await fetch("/api/outreach/meetings");
+      const meetingsRes = await fetch("/api/outreach/meetings", { cache: "no-store" });
       const meetingsData = await meetingsRes.json();
       setMeetings(meetingsData);
 
-      const incsRes = await fetch("/api/incubators");
+      const incsRes = await fetch("/api/incubators", { cache: "no-store" });
       const incsData = await incsRes.json();
       setIncubators(incsData);
 
       // Fetch external events using the Google Calendar API key
       try {
-        const calendarRes = await fetch("/api/outreach/calendar-events");
+        const calendarRes = await fetch("/api/outreach/calendar-events", { cache: "no-store" });
         const calendarData = await calendarRes.json();
         setExternalEvents(calendarData.events || []);
       } catch (calErr) {
@@ -448,12 +482,12 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
     if (syncInterval > 0) {
       const intervalId = setInterval(async () => {
         try {
-          const leadsRes = await fetch("/api/outreach/leads");
+          const leadsRes = await fetch("/api/outreach/leads", { cache: "no-store" });
           if (leadsRes.ok) {
             const leadsData = await leadsRes.json();
             setLeads(leadsData);
           }
-          const meetingsRes = await fetch("/api/outreach/meetings");
+          const meetingsRes = await fetch("/api/outreach/meetings", { cache: "no-store" });
           if (meetingsRes.ok) {
             const meetingsData = await meetingsRes.json();
             setMeetings(meetingsData);
@@ -552,20 +586,20 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
     }
   };
 
-  const handleUpdateLeadNotes = async (leadId, notesText) => {
-    addLog("SYSTEM", `Saving CRM notes for campaign lead...`);
+  const handleUpdateLeadNotes = async (leadId, notesText, nextActionDate) => {
+    addLog("SYSTEM", `Saving CRM notes and schedule for campaign lead...`);
     try {
       const res = await fetch("/api/outreach/leads/update-notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lead_id: leadId, notes: notesText })
+        body: JSON.stringify({ lead_id: leadId, notes: notesText, next_action_date: nextActionDate })
       });
       const data = await res.json();
       if (res.ok) {
         addLog("SYSTEM", `CRM notes saved successfully.`);
         await fetchData();
         if (selectedLeadForDetail && selectedLeadForDetail.id === leadId) {
-          setSelectedLeadForDetail(prev => ({ ...prev, notes: notesText }));
+          setSelectedLeadForDetail(prev => ({ ...prev, notes: notesText, next_action_date: nextActionDate }));
         }
         toast.success("Notes saved successfully!");
       } else {
@@ -652,15 +686,29 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
     }
   };
 
+  
   const handleSendEmail = async (leadId, leadName, leadEmail) => {
-    addLog("OUTREACH", `Triggering outreach partnership invitation email to ${leadName} (${leadEmail})...`);
+    addLog("OUTREACH", `Triggering outreach email to ${leadName} (${leadEmail})...`);
     setActiveWorkflowNode(1);
+    
+    let payload = { lead_id: leadId };
+    
+    if (targetType === "startups") {
+      const template = PREDEFINED_TEMPLATES[selectedTemplateKey];
+      const compiledSubject = template.subject.replace(/{StartupName}/g, leadName);
+      const compiledBody = template.body.replace(/{StartupName}/g, leadName);
+      payload = {
+        lead_id: leadId,
+        subject: compiledSubject,
+        body: compiledBody
+      };
+    }
     
     try {
       const res = await fetch("/api/outreach/send-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lead_id: leadId })
+        body: JSON.stringify(payload)
       });
       const data = await res.json();
       
@@ -955,7 +1003,43 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-      
+
+      {/* Target Type Toggle */}
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: "0.5rem" }}>
+        <div style={{ background: "var(--bg-surface)", padding: "4px", borderRadius: "10px", border: "1px solid var(--border-color)", display: "inline-flex", gap: "4px" }}>
+          <button
+            className={`btn ${targetType === "incubators" ? "btn-primary" : ""}`}
+            onClick={() => setTargetType("incubators")}
+            style={{ 
+              minWidth: "160px", 
+              justifyContent: "center",
+              background: targetType === "incubators" ? "var(--primary)" : "transparent",
+              color: targetType === "incubators" ? "white" : "var(--text-muted)",
+              border: "none",
+              boxShadow: targetType === "incubators" ? "var(--shadow-sm)" : "none",
+              fontWeight: targetType === "incubators" ? "700" : "500",
+            }}
+          >
+            Incubator Campaigns
+          </button>
+          <button
+            className={`btn ${targetType === "startups" ? "btn-primary" : ""}`}
+            onClick={() => setTargetType("startups")}
+            style={{ 
+              minWidth: "160px", 
+              justifyContent: "center",
+              background: targetType === "startups" ? "var(--primary)" : "transparent",
+              color: targetType === "startups" ? "white" : "var(--text-muted)",
+              border: "none",
+              boxShadow: targetType === "startups" ? "var(--shadow-sm)" : "none",
+              fontWeight: targetType === "startups" ? "700" : "500",
+            }}
+          >
+            Startup Campaigns
+          </button>
+        </div>
+      </div>
+
       {/* Sub Tab Bar Navigation */}
       <div style={{ 
         display: "flex", 
@@ -1129,12 +1213,12 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
           </div>
 
           {/* Funnel Analytics Widget */}
-          {leads.length > 0 && (() => {
-            const targetedCount = leads.length;
-            const sentCount = leads.filter(l => l.status !== 'Draft').length;
-            const followupCount = leads.filter(l => l.status === 'Follow-up Sent' || (l.followup_count || 0) > 0).length;
-            const repliedCount = leads.filter(l => ['Replied', 'Meeting Scheduled', 'Not Interested'].includes(l.status)).length;
-            const meetingCount = leads.filter(l => l.status === 'Meeting Scheduled').length;
+          {filteredLeads.length > 0 && (() => {
+            const targetedCount = filteredLeads.length;
+            const sentCount = filteredLeads.filter(l => l.status !== 'Draft').length;
+            const followupCount = filteredLeads.filter(l => l.status === 'Follow-up Sent' || (l.followup_count || 0) > 0).length;
+            const repliedCount = filteredLeads.filter(l => ['Replied', 'Meeting Scheduled', 'Not Interested', 'In Loop', 'Interviewed', 'Incubated'].includes(l.status)).length;
+            const meetingCount = filteredLeads.filter(l => ['Meeting Scheduled', 'Interviewed'].includes(l.status)).length;
 
             const getPercent = (count, base) => {
               if (!base) return '0%';
@@ -1339,7 +1423,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                               <button 
                                 className="btn btn-primary" 
                                 style={{ padding: "0.3rem 0.6rem", fontSize: "0.75rem", display: "inline-flex", alignItems: "center", gap: "0.25rem" }}
-                                onClick={() => handleSendEmail(lead.id, lead.incubator_name, lead.email)}
+                                onClick={(e) => { e.stopPropagation(); handleSendEmail(lead.id, lead.incubator_name, lead.email); }}
                               >
                                 <Send size={12} />
                                 <span>Send Invite</span>
@@ -1360,7 +1444,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                                   alignItems: "center",
                                   gap: "0.25rem"
                                 }}
-                                onClick={() => handleSendFollowup(lead.id, lead.incubator_name, lead.email)}
+                                onClick={(e) => { e.stopPropagation(); handleSendFollowup(lead.id, lead.incubator_name, lead.email); }}
                               >
                                 <Send size={12} />
                                 <span>Follow Up</span>

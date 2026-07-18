@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { toast } from "react-toastify";
 import { Search, MapPin, Globe, Mail, Phone, ExternalLink, Calendar, Building, HelpCircle, Layers, FileSignature, Send, X, Trash2 } from "lucide-react";
 
@@ -42,6 +43,33 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
   const [contactStatus, setContactStatus] = useState(null);
 
   // Fetch incubators based on filters
+  const [addingLeadId, setAddingLeadId] = useState(null);
+
+  const handleAddToCampaign = async (inc) => {
+    setAddingLeadId(inc.id);
+    try {
+      const res = await fetch("/api/outreach/add-lead", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          incubator_id: inc.id.toString(),
+          incubator_name: inc.name,
+          email: inc.email || ""
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success(`Successfully added ${inc.name} to campaign leads!`);
+      } else {
+        toast.error(data.detail || "Failed to add lead to campaigns.");
+      }
+    } catch (e) {
+      toast.error("Network error.");
+    } finally {
+      setAddingLeadId(null);
+    }
+  };
+
   const fetchIncubators = async () => {
     setLoading(true);
     try {
@@ -382,63 +410,21 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
               style={{ cursor: "pointer", animation: `fadeSlideUp 0.35s var(--ease-out) ${idx * 0.03}s both` }}
               onClick={() => setActiveDrawerInc(inc)}
             >
-              {/* Card Top Row */}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-                <span className="badge badge-primary" style={{ fontSize: "0.68rem" }}>
-                  {inc.region || "India"}
-                </span>
-                <span style={{ fontSize: "0.7rem", color: "var(--text-dim)", fontWeight: 500 }}>
-                  {inc.source_url || "Excel DB"}
-                </span>
-              </div>
-
-              <h2 className="card-title" style={{ paddingLeft: 8 }}>{inc.name}</h2>
-              <p className="card-description" style={{ paddingLeft: 8 }}>{inc.description || "No description available."}</p>
-
-              {/* Contact info row */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, borderTop: "1px solid var(--border-color)", borderBottom: "1px solid var(--border-color)", padding: "10px 8px", margin: "8px 0" }}>
-                {inc.website && (
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.8rem" }}>
-                    <Globe size={13} style={{ color: "var(--primary)", flexShrink: 0 }} />
-                    <a href={inc.website.startsWith("http") ? inc.website : `https://${inc.website}`}
-                      target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
-                      style={{ color: "var(--primary)", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {inc.website.replace(/https?:\/\//, "")}
-                    </a>
-                  </div>
-                )}
-                {inc.email && (
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.8rem" }}>
-                    <Mail size={13} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
-                    <a href={`mailto:${inc.email}`} onClick={(e) => e.stopPropagation()}
-                      style={{ color: "var(--text-muted)", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {inc.email}
-                    </a>
-                  </div>
-                )}
-                {!inc.website && !inc.email && (
-                  <div style={{ fontSize: "0.78rem", color: "var(--text-dim)", fontStyle: "italic" }}>Contact info not available</div>
-                )}
-              </div>
-
-              {/* Footer row */}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingLeft: 8 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: "0.78rem", color: "var(--text-muted)" }}>
-                  <MapPin size={12} style={{ color: "var(--primary)" }} />
-                  {inc.city ? `${inc.city}, ` : ""}{inc.state}
-                </div>
-                <div style={{ display: "flex", gap: 6 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", height: "100%", minHeight: "60px", padding: "10px" }}>
+                <h2 className="card-title" style={{ margin: 0, flex: 1, fontSize: "1.1rem" }}>{inc.name}</h2>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                   <button
-                    className="btn btn-ghost btn-icon"
-                    style={{ padding: "5px 8px", fontSize: "0.72rem" }}
-                    onClick={(e) => { e.stopPropagation(); onDraftMou && onDraftMou(inc.name); }}
-                    title="Draft MOU"
+                    className="btn btn-primary btn-icon"
+                    style={{ padding: 0, fontSize: "1rem", background: "var(--primary-light)", color: "var(--primary)", borderRadius: "50%", width: "28px", height: "28px", display: "flex", alignItems: "center", justifyContent: "center" }}
+                    onClick={(e) => { e.stopPropagation(); handleAddToCampaign(inc); }}
+                    disabled={addingLeadId === inc.id}
+                    title="Add to Campaign"
                   >
-                    <FileSignature size={14} />
+                    {addingLeadId === inc.id ? "..." : "+"}
                   </button>
                   <button
                     className="btn btn-primary"
-                    style={{ padding: "5px 12px", fontSize: "0.75rem" }}
+                    style={{ padding: "5px 16px", fontSize: "0.85rem" }}
                     onClick={(e) => { e.stopPropagation(); setActiveDrawerInc(inc); }}
                   >
                     View
@@ -452,7 +438,7 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
       )}
 
       {/* Drawer Details Overlay */}
-      {activeDrawerInc && (
+      {activeDrawerInc && createPortal(
         <div className="drawer-backdrop" onClick={() => setActiveDrawerInc(null)}>
           <div className="drawer-content" onClick={(e) => e.stopPropagation()}>
             <div className="drawer-header">
@@ -474,24 +460,7 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
 
             {/* Action Buttons */}
             <div className="drawer-body">
-            <div style={{ display: "flex", gap: 10, marginBottom: 24 }}>
-              <button
-                type="button"
-                className="btn btn-primary"
-                style={{ flex: 1, justifyContent: "center" }}
-                onClick={() => { onDraftMou && onDraftMou(activeDrawerInc.name); }}
-              >
-                <FileSignature size={15} /> Draft & Sign MOU
-              </button>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                style={{ flex: 1, justifyContent: "center" }}
-                onClick={() => setIsScheduleModalOpen(true)}
-              >
-                <Calendar size={15} /> Schedule Call
-              </button>
-            </div>
+
 
               {/* About */}
               <div className="drawer-section" style={{ borderTop: "none", paddingTop: 0 }}>
@@ -575,7 +544,8 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
               </div>
             </div>{/* end drawer-body */}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Schedule / Contact Modal */}
@@ -683,7 +653,8 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
               </div>
             </form>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

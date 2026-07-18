@@ -37,9 +37,8 @@ const NAV_ITEMS = [
     section: "Outreach",
     items: [
       { id: "directory",  label: "Incubators Directory", Icon: Building2,  subtitle: "Discover & search TBIs" },
-      { id: "outreach",   label: "Outreach Automation",  Icon: Sparkles,   subtitle: "MOU drafts & campaigns" },
       { id: "startups_directory", label: "Startups Directory", Icon: RocketIcon, subtitle: "Ecosystem startups list" },
-      { id: "startups_outreach", label: "Startup Campaigns", Icon: Sparkles, subtitle: "Email cohort founders" },
+      { id: "outreach",   label: "Outreach Automation",  Icon: Sparkles,   subtitle: "MOU drafts & campaigns" },
     ],
   },
   {
@@ -55,7 +54,6 @@ const PAGE_META = {
   directory:        { title: "Indian Incubators Directory",           sub: "Discover and search academic, government, and private TBIs." },
   outreach:         { title: "Email Outreach & Auto-Scheduler",       sub: "Draft collaboration MOUs, execute digital signatures, and run campaigns." },
   startups_directory: { title: "Ecosystem Startups Directory",        sub: "Filter, search, and manage cohort and ecosystem startups." },
-  startups_outreach:{ title: "Startup Campaign Manager",              sub: "Manage email outreach sequences, check replies, and track communications." },
   cohort_evaluator: { title: "INCUBEIN Cohort Evaluator",             sub: "Secure field-level encryption, multi-criteria scoring, AI reviews, and similarity matching." },
 };
 
@@ -183,8 +181,6 @@ export default function App() {
         return <DirectoryView filtersData={analyticsData ? analyticsData.filters : null} onDraftMou={handleDraftMouFromFinder} />;
       case "outreach":
         return <OutreachAutomation preselectedIncubatorName={mouPreselectedIncubator} refreshTrigger={outreachRefreshTrigger} />;
-      case "startups_outreach":
-        return <StartupsOutreachView />;
       case "startups_directory":
         return <StartupsDirectory />;
       case "cohort_evaluator":
@@ -332,220 +328,4 @@ export default function App() {
   );
 }
 
-const PREDEFINED_TEMPLATES = {
-  incubation: {
-    name: "Incubation Seat Offer",
-    subject: "INCUBEIN Cohort: Incubation Seat Offer - {StartupName}",
-    body: "Dear Founder,\n\nWe are pleased to inform you that {StartupName} has been selected for incubation in the INCUBEIN Startup Cohort!\n\nOur evaluation committee was highly impressed by your application. We will follow up shortly with formal onboarding details.\n\nBest regards,\nINCUBEIN Foundation Team"
-  },
-  deck_request: {
-    name: "Pitch Deck Request",
-    subject: "INCUBEIN Cohort: Pitch Deck Request - {StartupName}",
-    body: "Dear Founder,\n\nThank you for applying to the INCUBEIN Startup Program.\n\nWe have completed our initial screening. To assist in our final ranking, please reply with your latest presentation deck and financial roadmap.\n\nBest regards,\nINCUBEIN Foundation Team"
-  },
-  interview: {
-    name: "Selection Interview Invite",
-    subject: "INCUBEIN Cohort: Selection Interview - {StartupName}",
-    body: "Dear Founder,\n\nCongratulations! {StartupName} has shortlisted for the final interview phase of the INCUBEIN Cohort.\n\nPlease select a convenient slot to schedule a 15-minute pitch session with our selection committee.\n\nBest regards,\nINCUBEIN Foundation Team"
-  }
-};
 
-function StartupsOutreachView() {
-  const [leads, setLeads] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [sendingEmailId, setSendingEmailId] = useState(null);
-  const [selectedTemplateKey, setSelectedTemplateKey] = useState("incubation");
-
-  const fetchLeads = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch("/api/outreach/leads");
-      if (res.ok) {
-        const data = await res.json();
-        // Filter only startup leads from incubein_cohort
-        const startupLeads = data.filter(lead => lead.incubator_id === "incubein_cohort");
-        setLeads(startupLeads);
-      }
-    } catch (e) {
-      console.error("Error fetching leads:", e);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchLeads();
-  }, []);
-
-  const handleSendEmail = async (lead) => {
-    setSendingEmailId(lead.id);
-    
-    // Compile template values
-    const template = PREDEFINED_TEMPLATES[selectedTemplateKey];
-    const compiledSubject = template.subject.replace(/{StartupName}/g, lead.incubator_name);
-    const compiledBody = template.body.replace(/{StartupName}/g, lead.incubator_name);
-    
-    try {
-      const res = await fetch("/api/outreach/send-email", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          lead_id: lead.id,
-          subject: compiledSubject,
-          body: compiledBody
-        }),
-      });
-      const result = await res.json();
-      if (res.ok) {
-        toast.success(result.message);
-        fetchLeads();
-      } else {
-        toast.error(result.detail || "Failed to trigger email.");
-      }
-    } catch (e) {
-      toast.error("Network error.");
-    } finally {
-      setSendingEmailId(null);
-    }
-  };
-
-  const handleClearCampaigns = async () => {
-    if (!window.confirm("Are you sure you want to clear all startup campaign leads?")) return;
-    try {
-      const res = await fetch("/api/outreach/clear-startups", { method: "POST" });
-      const result = await res.json();
-      if (res.ok) {
-        toast.success(result.message);
-        setLeads([]);
-      } else {
-        toast.error("Failed to clear campaign leads.");
-      }
-    } catch (e) {
-      toast.error("Network error.");
-    }
-  };
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "20px", marginTop: "1rem" }}>
-      <div style={{
-        background: "white",
-        border: "1px solid var(--border-color)",
-        borderRadius: "var(--radius-xl)",
-        padding: "20px",
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        flexWrap: "wrap",
-        gap: "12px"
-      }}>
-        <div>
-          <h2 style={{ fontSize: "1.15rem", fontWeight: 800, color: "var(--text-primary)" }}>
-            Startup Campaign Manager
-          </h2>
-          <p style={{ fontSize: "0.78rem", color: "var(--text-muted)", margin: 0 }}>
-            Manage email outreach sequences, check replies, and select pre-defined templates for cohort applicants.
-          </p>
-        </div>
-        
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          {leads.length > 0 && (
-            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <span style={{ fontSize: "0.78rem", color: "var(--text-dim)", fontWeight: 700 }}>Active Template:</span>
-              <select
-                value={selectedTemplateKey}
-                onChange={(e) => setSelectedTemplateKey(e.target.value)}
-                style={{ height: "36px", fontSize: "0.82rem", padding: "0 8px", borderRadius: "8px", border: "1px solid var(--border-color)", background: "white", fontWeight: 700, color: "var(--primary)" }}
-              >
-                {Object.entries(PREDEFINED_TEMPLATES).map(([key, t]) => (
-                  <option key={key} value={key}>{t.name}</option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {leads.length > 0 && (
-            <button
-              className="btn btn-secondary"
-              onClick={handleClearCampaigns}
-              style={{ color: "var(--danger)" }}
-            >
-              <Trash2 size={14} style={{ marginRight: "6px" }} />
-              Reset Startup Leads
-            </button>
-          )}
-        </div>
-      </div>
-
-      {loading ? (
-        <div style={{ textAlign: "center", padding: "40px" }}>Loading leads...</div>
-      ) : leads.length === 0 ? (
-        <div style={{
-          background: "white",
-          border: "1px dashed var(--border-color)",
-          borderRadius: "var(--radius-xl)",
-          padding: "40px",
-          textAlign: "center"
-        }}>
-          <AlertCircle size={24} style={{ color: "var(--text-dim)", marginBottom: "8px" }} />
-          <h4 style={{ fontSize: "0.95rem", fontWeight: 700, color: "var(--text-primary)" }}>No Startup Campaigns Active</h4>
-          <p style={{ fontSize: "0.78rem", color: "var(--text-muted)", margin: "6px 0 16px" }}>
-            Add shortlisted startups to campaigns from the Cohort Evaluator to initialize outreach campaigns.
-          </p>
-        </div>
-      ) : (
-        <div style={{
-          background: "white",
-          border: "1px solid var(--border-color)",
-          borderRadius: "var(--radius-xl)",
-          overflow: "hidden"
-        }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left" }}>
-            <thead>
-              <tr style={{ background: "var(--bg-dark)", borderBottom: "1px solid var(--border-color)" }}>
-                <th style={{ padding: "12px 16px", fontSize: "0.75rem", fontWeight: 700, color: "var(--text-muted)" }}>Startup</th>
-                <th style={{ padding: "12px 16px", fontSize: "0.75rem", fontWeight: 700, color: "var(--text-muted)" }}>Email</th>
-                <th style={{ padding: "12px 16px", fontSize: "0.75rem", fontWeight: 700, color: "var(--text-muted)" }}>Evaluation Score</th>
-                <th style={{ padding: "12px 16px", fontSize: "0.75rem", fontWeight: 700, color: "var(--text-muted)" }}>Status</th>
-                <th style={{ padding: "12px 16px", fontSize: "0.75rem", fontWeight: 700, color: "var(--text-muted)" }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {leads.map((lead) => (
-                <tr key={lead.id} style={{ borderBottom: "1px solid var(--border-color)" }}>
-                  <td style={{ padding: "14px 16px" }}>
-                    <div style={{ display: "flex", flexDirection: "column" }}>
-                      <span style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--text-primary)" }}>{lead.incubator_name}</span>
-                      <span style={{ fontSize: "0.7rem", color: "var(--text-dim)" }}>ID: {lead.id}</span>
-                    </div>
-                  </td>
-                  <td style={{ padding: "14px 16px", fontSize: "0.82rem" }}>{lead.email}</td>
-                  <td style={{ padding: "14px 16px", fontSize: "0.82rem", fontWeight: 700, color: "var(--primary)" }}>{lead.lead_score}</td>
-                  <td style={{ padding: "14px 16px" }}>
-                    <span className="badge" style={{
-                      background: lead.status === "New" ? "var(--primary-light)" : "var(--bg-dark)",
-                      color: lead.status === "New" ? "var(--primary)" : "var(--text-primary)",
-                      fontWeight: 700,
-                      fontSize: "0.72rem"
-                    }}>
-                      {lead.status}
-                    </span>
-                  </td>
-                  <td style={{ padding: "14px 16px" }}>
-                    <button
-                      className="btn btn-primary"
-                      onClick={() => handleSendEmail(lead)}
-                      disabled={sendingEmailId === lead.id}
-                      style={{ padding: "5px 12px", fontSize: "0.74rem", height: "28px" }}
-                    >
-                      {sendingEmailId === lead.id ? "Sending..." : "Send Campaign Email"}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}

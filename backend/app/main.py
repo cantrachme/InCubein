@@ -1234,6 +1234,7 @@ class UpdateLeadStatusRequest(BaseModel):
 class UpdateLeadNotesRequest(BaseModel):
     lead_id: str
     notes: str
+    next_action_date: Optional[str] = ""
 
 def seed_outreach_leads():
     import uuid
@@ -1319,8 +1320,8 @@ def seed_outreach_leads():
             lead_id = f"lead_{uuid.uuid4().hex[:8]}"
             cursor.execute('''
                 INSERT INTO outreach_leads (
-                    id, incubator_id, incubator_name, email, status, lead_score
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    id, incubator_id, incubator_name, email, status, lead_score, contact_count, last_contact_reason, next_action_date
+                ) VALUES (?, ?, ?, ?, ?, ?, 0, 'None', '')
             ''', (lead_id, inc_id, inc_name, inc_email, "Draft", 0))
         
     conn.commit()
@@ -1350,8 +1351,8 @@ def add_outreach_lead(req: AddLeadRequest):
         
     lead_id = f"lead_{uuid.uuid4().hex[:8]}"
     cursor.execute('''
-        INSERT INTO outreach_leads (id, incubator_id, incubator_name, email, status, lead_score)
-        VALUES (?, ?, ?, ?, 'Draft', 0)
+        INSERT INTO outreach_leads (id, incubator_id, incubator_name, email, status, lead_score, contact_count, last_contact_reason, next_action_date)
+        VALUES (?, ?, ?, ?, 'Draft', 0, 0, 'None', '')
     ''', (lead_id, req.incubator_id, req.incubator_name, req.email))
     
     conn.commit()
@@ -1392,7 +1393,10 @@ def update_lead_notes(req: UpdateLeadNotesRequest):
     if not lead:
         conn.close()
         raise HTTPException(status_code=404, detail="Lead not found")
-    cursor.execute("UPDATE outreach_leads SET notes = ? WHERE id = ?", (req.notes, req.lead_id))
+    if req.next_action_date is not None:
+        cursor.execute("UPDATE outreach_leads SET notes = ?, next_action_date = ? WHERE id = ?", (req.notes, req.next_action_date, req.lead_id))
+    else:
+        cursor.execute("UPDATE outreach_leads SET notes = ? WHERE id = ?", (req.notes, req.lead_id))
     conn.commit()
     conn.close()
     return {"status": "success", "message": "Campaign lead notes updated successfully."}
@@ -1458,8 +1462,8 @@ Incubein Foundation Admin
             print("Error sending outreach email via SMTP:", e)
             
     cursor.execute(
-        "UPDATE outreach_leads SET status = 'Sent', sent_at = ? WHERE id = ?",
-        (datetime.now().isoformat(), req.lead_id)
+        "UPDATE outreach_leads SET status = 'Sent', sent_at = ?, contact_count = coalesce(contact_count, 0) + 1, last_contact_reason = ? WHERE id = ?",
+        (datetime.now().isoformat(), req.subject or "Outreach Email", req.lead_id)
     )
     conn.commit()
     conn.close()
@@ -2709,7 +2713,7 @@ from .evaluator import (
     clean_dpiit,
     map_excel_headers,
     evaluate_rules,
-    evaluate_llm,
+    evaluate_advanced_heuristics,
     compute_similarity_matrix
 )
 from .database import get_mongo_db
@@ -2787,17 +2791,18 @@ async def upload_cohort_excel(file: UploadFile = File(...)):
             startup_data["rule_score"] = rule_score
             startup_data["rule_breakdown"] = rule_breakdown
             
-            # LLM Evaluation (Disabled/Removed for startups)
-            startup_data["llm_score"] = 0.0
+            # Advanced Heuristic Evaluation (Replaces AI)
+            eval_result = evaluate_advanced_heuristics(startup_data)
+            startup_data["llm_score"] = eval_result["llm_score"]
             startup_data["evaluation"] = {
-                "innovation": 0,
-                "market": 0,
-                "scalability": 0,
-                "execution": 0,
-                "problem": 0,
-                "strengths": ["AI evaluation disabled for cohort startups"],
-                "weaknesses": [],
-                "recommendation": "Rule-scored"
+                "innovation": eval_result["innovation"],
+                "market": eval_result["market"],
+                "scalability": eval_result["scalability"],
+                "execution": eval_result["execution"],
+                "problem": eval_result["problem"],
+                "strengths": eval_result["strengths"],
+                "weaknesses": eval_result["weaknesses"],
+                "recommendation": eval_result["recommendation"]
             }
             
             # Calculate final score (100% based on rule engine score)

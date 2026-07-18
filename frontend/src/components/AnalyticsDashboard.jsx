@@ -12,6 +12,7 @@ import {
   Send,
   PieChart as PieIcon,
   BarChart2,
+  Target,
 } from "lucide-react";
 
 /* ── Skeleton Loaders ────────────────────────────────────────── */
@@ -364,8 +365,8 @@ function LineChart({ leads = [] }) {
 function FunnelWidget({ leads }) {
   const total = leads.length;
   const sent = leads.filter(l => l.status !== "Draft").length;
-  const replied = leads.filter(l => ["Replied", "Meeting Scheduled", "Not Interested"].includes(l.status)).length;
-  const meetings = leads.filter(l => l.status === "Meeting Scheduled").length;
+  const replied = leads.filter(l => ["Replied", "Meeting Scheduled", "Not Interested", "In Loop", "Interviewed", "Incubated"].includes(l.status)).length;
+  const meetings = leads.filter(l => ["Meeting Scheduled", "Interviewed"].includes(l.status)).length;
 
   const getPct = (val) => {
     if (!sent) return 0;
@@ -523,8 +524,9 @@ export default function AnalyticsDashboard({ analyticsData, loading }) {
 
   // Compute live campaign conversion ratio metrics
   const sentLeadsCount = leads.filter(l => l.status !== "Draft").length;
-  const repliedLeadsCount = leads.filter(l => ["Replied", "Meeting Scheduled", "Not Interested"].includes(l.status)).length;
+  const repliedLeadsCount = leads.filter(l => ["Replied", "Meeting Scheduled", "Not Interested", "In Loop", "Interviewed", "Incubated"].includes(l.status)).length;
   const conversionRatioVal = sentLeadsCount > 0 ? ((repliedLeadsCount / sentLeadsCount) * 100).toFixed(1) : "0.0";
+  const totalStartups = leads.filter(l => l.incubator_id === "incubein_cohort").length;
 
   return (
     <div>
@@ -569,6 +571,14 @@ export default function AnalyticsDashboard({ analyticsData, loading }) {
           iconColor="#10B981"
           footer="Outreach response rate"
           trend="Active"
+        />
+        <MetricCard
+          title="Startups Tracked"
+          value={totalStartups}
+          Icon={Target}
+          iconColor="#3B82F6"
+          footer="Active ecosystem startups"
+          trend="In CRM"
         />
       </div>
 

@@ -1352,8 +1352,8 @@ def add_outreach_lead(req: AddLeadRequest):
     lead_id = f"lead_{uuid.uuid4().hex[:8]}"
     cursor.execute('''
         INSERT INTO outreach_leads (id, incubator_id, incubator_name, email, status, lead_score, contact_count, last_contact_reason, next_action_date)
-        VALUES (?, ?, ?, ?, 'Draft', 0, 0, 'None', '')
-    ''', (lead_id, req.incubator_id, req.incubator_name, req.email))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (lead_id, req.incubator_id, req.incubator_name, req.email, 'Draft', 0, 0, 'None', ''))
     
     conn.commit()
     conn.close()
@@ -1493,9 +1493,29 @@ def send_followup_email(lead_id: str, lead_name: str, lead_email: str, followup_
     is_smtp_ready = smtp_host and smtp_user and smtp_pass and "your_email" not in smtp_user
     email_sent_successfully = False
     
-    subject = f"Following up: Academic Partnership Opportunity - Incubein Innovation Ecosystem (Follow-up #{followup_number})"
-    
-    body_text = f"""Dear Representative,
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT incubator_id FROM outreach_leads WHERE id = ?", (lead_id,))
+    lead_row = cursor.fetchone()
+    conn.close()
+
+    if lead_row and lead_row["incubator_id"] == "incubein_cohort":
+        subject = f"Following up: INCUBEIN Cohort - {lead_name} (Follow-up #{followup_number})"
+        body_text = f"""Dear Founder,
+
+We hope this email finds you well.
+
+We are writing to follow up on our previous email regarding your selection/application for the INCUBEIN Startup Cohort. 
+
+Please reply to this email to confirm the next steps or schedule a quick call with our onboarding team.
+
+Best regards,
+INCUBEIN Team
+(Follow-up Reference #{followup_number})
+"""
+    else:
+        subject = f"Following up: Academic Partnership Opportunity - Incubein Innovation Ecosystem (Follow-up #{followup_number})"
+        body_text = f"""Dear Representative,
 
 We hope this email finds you well. 
 
@@ -2601,7 +2621,7 @@ def get_outreach_meetings():
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT m.*, l.meeting_link 
+        SELECT m.*, l.meeting_link, l.incubator_id 
         FROM scheduled_meetings m
         LEFT JOIN outreach_leads l ON m.lead_id = l.id
     ''')
@@ -2975,6 +2995,10 @@ def add_cohort_to_campaigns(req: AddCohortToEcosystemRequest):
             
         cursor = db["incubein_applications"].find(query)
         
+        # Open translation connection
+        conn = get_db_connection()
+        db_cursor = conn.cursor()
+        
         inserted_count = 0
         for doc in cursor:
             enc = doc.get("encrypted_fields", {})
@@ -2983,22 +3007,32 @@ def add_cohort_to_campaigns(req: AddCohortToEcosystemRequest):
             if not email:
                 continue
                 
-            # Check duplicate in outreach_leads
-            existing = db["outreach_leads"].find_one({"email": email})
-            if not existing:
-                lead_id = str(uuid.uuid4())[:8]
-                lead_record = {
-                    "id": lead_id,
-                    "incubator_id": "incubein_cohort",
-                    "incubator_name": doc["startup_name"],
-                    "email": email,
-                    "status": "New",
-                    "lead_score": int(doc["final_score"]),
-                    "notes": f"Cohort Application. Sector: {doc['sector']}. Stage: {doc['stage']}. Final Score: {doc['final_score']}."
-                }
-                db["outreach_leads"].insert_one(lead_record)
+            # Check duplicate in outreach_leads using both email and startup_name
+            db_cursor.execute("SELECT id FROM outreach_leads WHERE email = ? AND incubator_name = ?", (email, doc["startup_name"]))
+            existing = db_cursor.fetchone()
+            
+            if existing:
+                # Update existing lead status and lead_score
+                db_cursor.execute('''
+                    UPDATE outreach_leads 
+                    SET status = 'Draft', lead_score = 0, incubator_id = 'incubein_cohort' 
+                    WHERE email = ? AND incubator_name = ?
+                ''', (email, doc["startup_name"]))
+                inserted_count += 1
+            else:
+                # Insert new lead with all required schema columns populated
+                lead_id = f"lead_{uuid.uuid4().hex[:8]}"
+                db_cursor.execute('''
+                    INSERT INTO outreach_leads (
+                        id, incubator_id, incubator_name, email, status, lead_score, 
+                        contact_count, last_contact_reason, next_action_date
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (lead_id, 'incubein_cohort', doc["startup_name"], email, 'Draft', 0, 0, 'None', ''))
                 inserted_count += 1
                 
+        conn.commit()
+        conn.close()
+        
         return {"status": "success", "message": f"Successfully added {inserted_count} startups to the outreach campaign leads."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

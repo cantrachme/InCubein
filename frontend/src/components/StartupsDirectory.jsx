@@ -218,81 +218,116 @@ export default function StartupsDirectory() {
         </div>
       ) : (
         /* ─── Grid View ──────────────────────────────────────────── */
-        <div style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-          gap: "16px"
-        }}>
-          {startups.map((st) => (
-            <div
-              key={st.id}
-              onClick={() => setActiveDrawerStartup(st)}
-              style={{
-                background: "white",
-                border: "1px solid var(--border-color)",
-                borderRadius: "var(--radius-lg)",
-                padding: "12px",
-                cursor: "pointer",
-                transition: "all var(--transition-base)",
-                display: "flex",
-                flexDirection: "column",
-                gap: "8px"
-              }}
-              className="card-hover"
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                <span className="badge badge-primary" style={{ fontSize: "0.68rem" }}>
-                  {st.sector}
-                </span>
-                <span style={{ fontSize: "0.72rem", color: "var(--text-dim)", fontWeight: 700 }}>
-                  {st.funding_stage}
-                </span>
-              </div>
+        (() => {
+          const top3Ids = [...startups]
+            .filter(s => s.confidence_score !== undefined && s.confidence_score !== null)
+            .sort((a, b) => parseFloat(b.confidence_score) - parseFloat(a.confidence_score))
+            .slice(0, 3)
+            .map(s => s.id);
 
-              <div>
-                <h3 style={{ fontSize: "1rem", fontWeight: 800, color: "var(--text-primary)", margin: "4px 0" }}>
-                  {st.startup_name}
-                </h3>
-                {st.founders && (
-                  <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "0.75rem", color: "var(--text-muted)" }}>
-                    <User size={12} />
-                    <span>{st.founders}</span>
+          return (
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+              gap: "16px"
+            }}>
+              {startups.map((st) => {
+                const isTop3 = top3Ids.includes(st.id);
+                return (
+                  <div
+                    key={st.id}
+                    onClick={() => setActiveDrawerStartup(st)}
+                    style={{
+                      background: isTop3 ? "rgba(16, 185, 129, 0.05)" : "white",
+                      borderWidth: "1px",
+                      borderStyle: "solid",
+                      borderColor: "var(--border-color)",
+                      borderLeftColor: isTop3 ? "#10b981" : "var(--border-color)",
+                      borderLeftWidth: isTop3 ? "4px" : "1px",
+                      borderRadius: "var(--radius-lg)",
+                      padding: "12px",
+                      cursor: "pointer",
+                      transition: "all var(--transition-base)",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "8px"
+                    }}
+                    className="card-hover"
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                      <span className="badge badge-primary" style={{ fontSize: "0.68rem" }}>
+                        {st.sector}
+                      </span>
+                      <span style={{ fontSize: "0.72rem", color: "var(--text-dim)", fontWeight: 700 }}>
+                        {st.funding_stage}
+                      </span>
+                    </div>
+
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        <h3 style={{ fontSize: "1rem", fontWeight: 800, color: "var(--text-primary)", margin: "4px 0" }}>
+                          {st.startup_name}
+                        </h3>
+                        {isTop3 && (
+                          <span style={{
+                            padding: "2px 6px",
+                            borderRadius: "4px",
+                            fontSize: "0.58rem",
+                            fontWeight: 800,
+                            background: "#e6f4ea",
+                            color: "#137333",
+                            border: "1px solid #ceead6",
+                            textTransform: "uppercase",
+                            letterSpacing: "0.02em"
+                          }}>
+                            Top Tier
+                          </span>
+                        )}
+                      </div>
+                      {st.founders && (
+                        <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                          <User size={12} />
+                          <span>{st.founders}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div style={{
+                      borderTop: "1px solid var(--border-color)",
+                      paddingTop: "8px",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      fontSize: "0.76rem",
+                      color: "var(--text-dim)",
+                      marginTop: "auto"
+                    }}>
+                      <span style={{ display: "flex", alignItems: "center", gap: "3px" }}>
+                        <MapPin size={12} /> {st.hq_city}
+                      </span>
+                      {st.confidence_score && (
+                        <span style={{ fontWeight: 800, color: isTop3 ? "#137333" : "var(--primary)" }}>
+                          Score: {st.confidence_score}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ marginTop: "4px", display: "flex", justifyContent: "flex-end" }}>
+                      <button
+                        className="btn btn-primary btn-icon"
+                        style={{ padding: "6px", fontSize: "0.8rem", background: "var(--primary-light)", color: "var(--primary)", borderRadius: "50%", width: "32px", height: "32px", display: "flex", alignItems: "center", justifyContent: "center" }}
+                        onClick={(e) => { e.stopPropagation(); handleAddToCampaign(st); }}
+                        disabled={addingToCampaign}
+                        title="Add to Campaign"
+                      >
+                        {addingToCampaign ? "..." : "+"}
+                      </button>
+                    </div>
                   </div>
-                )}
-              </div>
-
-              <div style={{
-                borderTop: "1px solid var(--border-color)",
-                paddingTop: "8px",
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                fontSize: "0.76rem",
-                color: "var(--text-dim)"
-              }}>
-                <span style={{ display: "flex", alignItems: "center", gap: "3px" }}>
-                  <MapPin size={12} /> {st.hq_city}
-                </span>
-                {st.confidence_score && (
-                  <span style={{ fontWeight: 800, color: "var(--primary)" }}>
-                    Score: {st.confidence_score}
-                  </span>
-                )}
-              </div>
-              <div style={{ marginTop: "4px", display: "flex", justifyContent: "flex-end" }}>
-                <button
-                  className="btn btn-primary btn-icon"
-                  style={{ padding: "6px", fontSize: "0.8rem", background: "var(--primary-light)", color: "var(--primary)", borderRadius: "50%", width: "32px", height: "32px", display: "flex", alignItems: "center", justifyContent: "center" }}
-                  onClick={(e) => { e.stopPropagation(); handleAddToCampaign(st); }}
-                  disabled={addingToCampaign}
-                  title="Add to Campaign"
-                >
-                  {addingToCampaign ? "..." : "+"}
-                </button>
-              </div>
+                );
+              })}
             </div>
-          ))}
-        </div>
+          );
+        })()
       )}
 
       {/* ─── SLIDE OVER DRAWER ──────────────────────────────────── */}

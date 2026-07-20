@@ -108,7 +108,7 @@ function BarChart({ data, valueKey = "count", labelKey, maxVal, fillStyle }) {
       {data.map((row, idx) => {
         const pct = ((row[valueKey] / maxVal) * 100).toFixed(1);
         return (
-          <div key={row[labelKey] || idx} className="bar-wrapper" style={{ animationDelay: `${idx * 0.06}s`, animation: "fadeSlideUp 0.4s var(--ease-out) both" }}>
+          <div key={row[labelKey] || idx} className="bar-wrapper" style={{ animationDelay: `${idx * 0.06}s` }}>
             <div className="bar-label" title={row[labelKey]}>{row[labelKey]}</div>
             <div className="bar-track">
               <div

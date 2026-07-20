@@ -785,6 +785,7 @@ input, select, textarea { font-family: inherit; }
   align-items: center;
   gap: 10px;
   padding: 5px 0;
+  animation: fadeSlideUp 0.4s var(--ease-out) both;
 }
 
 .bar-label {

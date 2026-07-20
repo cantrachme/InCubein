@@ -90,10 +90,16 @@ const PREDEFINED_TEMPLATES = {
   }
 };
 
-export default function OutreachAutomation({ preselectedIncubatorName, refreshTrigger }) {
+export default function OutreachAutomation({ preselectedIncubatorName, refreshTrigger, defaultTargetType }) {
   const [leads, setLeads] = useState([]);
 
-  const [targetType, setTargetType] = useState("incubators"); // 'incubators' or 'startups'
+  const [targetType, setTargetType] = useState(defaultTargetType || "incubators"); // 'incubators' or 'startups'
+
+  useEffect(() => {
+    if (defaultTargetType) {
+      setTargetType(defaultTargetType);
+    }
+  }, [defaultTargetType]);
   const [selectedTemplateKey, setSelectedTemplateKey] = useState("incubation");
 
   const [meetings, setMeetings] = useState([]);
@@ -109,6 +115,13 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   // 1: Send, 2: Reply, 3: AI intent, 4: Score, 5: Calendar
   const [activeWorkflowNode, setActiveWorkflowNode] = useState(0);
   const [activeSubTab, setActiveSubTab] = useState("campaigns");
+
+  // Ensure invalid tabs for startups are deselected automatically
+  useEffect(() => {
+    if (targetType === "startups" && (activeSubTab === "mou" || activeSubTab === "discover")) {
+      setActiveSubTab("campaigns");
+    }
+  }, [targetType, activeSubTab]);
   
   // Terminal logs state
   const [terminalLogs, setTerminalLogs] = useState([
@@ -275,6 +288,14 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
       return false;
     }
     return true;
+  });
+
+  const filteredMeetings = meetings.filter(meeting => {
+    if (targetType === "startups") {
+      return meeting.incubator_id === "incubein_cohort";
+    } else {
+      return meeting.incubator_id !== "incubein_cohort";
+    }
   });
 
   // Reset page to 1 when filters change
@@ -997,48 +1018,50 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   };
 
   // Metrics
-  const totalSent = leads.filter(l => l.status !== "Draft").length;
-  const totalReplies = leads.filter(l => ["Replied", "Meeting Scheduled", "Not Interested"].includes(l.status)).length;
-  const totalMeetings = meetings.length;
+  const totalSent = filteredLeads.filter(l => l.status !== "Draft").length;
+  const totalReplies = filteredLeads.filter(l => ["Replied", "Meeting Scheduled", "Not Interested"].includes(l.status)).length;
+  const totalMeetings = filteredMeetings.length;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
 
       {/* Target Type Toggle */}
-      <div style={{ display: "flex", justifyContent: "center", marginBottom: "0.5rem" }}>
-        <div style={{ background: "var(--bg-surface)", padding: "4px", borderRadius: "10px", border: "1px solid var(--border-color)", display: "inline-flex", gap: "4px" }}>
-          <button
-            className={`btn ${targetType === "incubators" ? "btn-primary" : ""}`}
-            onClick={() => setTargetType("incubators")}
-            style={{ 
-              minWidth: "160px", 
-              justifyContent: "center",
-              background: targetType === "incubators" ? "var(--primary)" : "transparent",
-              color: targetType === "incubators" ? "white" : "var(--text-muted)",
-              border: "none",
-              boxShadow: targetType === "incubators" ? "var(--shadow-sm)" : "none",
-              fontWeight: targetType === "incubators" ? "700" : "500",
-            }}
-          >
-            Incubator Campaigns
-          </button>
-          <button
-            className={`btn ${targetType === "startups" ? "btn-primary" : ""}`}
-            onClick={() => setTargetType("startups")}
-            style={{ 
-              minWidth: "160px", 
-              justifyContent: "center",
-              background: targetType === "startups" ? "var(--primary)" : "transparent",
-              color: targetType === "startups" ? "white" : "var(--text-muted)",
-              border: "none",
-              boxShadow: targetType === "startups" ? "var(--shadow-sm)" : "none",
-              fontWeight: targetType === "startups" ? "700" : "500",
-            }}
-          >
-            Startup Campaigns
-          </button>
+      {!defaultTargetType && (
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: "0.5rem" }}>
+          <div style={{ background: "var(--bg-surface)", padding: "4px", borderRadius: "10px", border: "1px solid var(--border-color)", display: "inline-flex", gap: "4px" }}>
+            <button
+              className={`btn ${targetType === "incubators" ? "btn-primary" : ""}`}
+              onClick={() => setTargetType("incubators")}
+              style={{ 
+                minWidth: "160px", 
+                justifyContent: "center",
+                background: targetType === "incubators" ? "var(--primary)" : "transparent",
+                color: targetType === "incubators" ? "white" : "var(--text-muted)",
+                border: "none",
+                boxShadow: targetType === "incubators" ? "var(--shadow-sm)" : "none",
+                fontWeight: targetType === "incubators" ? "700" : "500",
+              }}
+            >
+              Incubator Campaigns
+            </button>
+            <button
+              className={`btn ${targetType === "startups" ? "btn-primary" : ""}`}
+              onClick={() => setTargetType("startups")}
+              style={{ 
+                minWidth: "160px", 
+                justifyContent: "center",
+                background: targetType === "startups" ? "var(--primary)" : "transparent",
+                color: targetType === "startups" ? "white" : "var(--text-muted)",
+                border: "none",
+                boxShadow: targetType === "startups" ? "var(--shadow-sm)" : "none",
+                fontWeight: targetType === "startups" ? "700" : "500",
+              }}
+            >
+              Startup Campaigns
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Sub Tab Bar Navigation */}
       <div style={{ 
@@ -1065,22 +1088,24 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
           <Sparkles size={14} style={{ marginRight: "6px" }} />
           Outreach Campaigns
         </button>
-        <button 
-          className="btn" 
-          style={{ 
-            background: activeSubTab === "mou" ? "var(--primary-light)" : "transparent",
-            color: activeSubTab === "mou" ? "var(--primary)" : "var(--text-muted)",
-            borderColor: activeSubTab === "mou" ? "var(--primary)" : "transparent",
-            fontWeight: activeSubTab === "mou" ? "700" : "500",
-            padding: "8px 16px",
-            fontSize: "0.85rem",
-            border: "1px solid transparent"
-          }}
-          onClick={() => setActiveSubTab("mou")}
-        >
-          <PenTool size={14} style={{ marginRight: "6px" }} />
-          MOU Draft Builder
-        </button>
+        {targetType === "incubators" && (
+          <button 
+            className="btn" 
+            style={{ 
+              background: activeSubTab === "mou" ? "var(--primary-light)" : "transparent",
+              color: activeSubTab === "mou" ? "var(--primary)" : "var(--text-muted)",
+              borderColor: activeSubTab === "mou" ? "var(--primary)" : "transparent",
+              fontWeight: activeSubTab === "mou" ? "700" : "500",
+              padding: "8px 16px",
+              fontSize: "0.85rem",
+              border: "1px solid transparent"
+            }}
+            onClick={() => setActiveSubTab("mou")}
+          >
+            <PenTool size={14} style={{ marginRight: "6px" }} />
+            MOU Draft Builder
+          </button>
+        )}
         <button 
           className="btn" 
           style={{ 
@@ -1095,24 +1120,26 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
           onClick={() => setActiveSubTab("meetings")}
         >
           <Calendar size={14} style={{ marginRight: "6px" }} />
-          Scheduled Meetings ({meetings.length})
+          Scheduled Meetings ({filteredMeetings.length})
         </button>
-        <button 
-          className="btn" 
-          style={{ 
-            background: activeSubTab === "discover" ? "var(--primary-light)" : "transparent",
-            color: activeSubTab === "discover" ? "var(--primary)" : "var(--text-muted)",
-            borderColor: activeSubTab === "discover" ? "var(--primary)" : "transparent",
-            fontWeight: activeSubTab === "discover" ? "700" : "500",
-            padding: "8px 16px",
-            fontSize: "0.85rem",
-            border: "1px solid transparent"
-          }}
-          onClick={() => setActiveSubTab("discover")}
-        >
-          <Building2 size={14} style={{ marginRight: "6px" }} />
-          Discover Leads
-        </button>
+        {targetType === "incubators" && (
+          <button 
+            className="btn" 
+            style={{ 
+              background: activeSubTab === "discover" ? "var(--primary-light)" : "transparent",
+              color: activeSubTab === "discover" ? "var(--primary)" : "var(--text-muted)",
+              borderColor: activeSubTab === "discover" ? "var(--primary)" : "transparent",
+              fontWeight: activeSubTab === "discover" ? "700" : "500",
+              padding: "8px 16px",
+              fontSize: "0.85rem",
+              border: "1px solid transparent"
+            }}
+            onClick={() => setActiveSubTab("discover")}
+          >
+            <Building2 size={14} style={{ marginRight: "6px" }} />
+            Discover Leads
+          </button>
+        )}
       </div>
 
       {activeSubTab === "campaigns" && (
@@ -1334,7 +1361,9 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                   <table className="data-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem", textAlign: "left" }}>
                     <thead>
                       <tr style={{ borderBottom: "1px solid var(--border-color)", paddingBottom: "0.5rem" }}>
-                        <th style={{ padding: "0.75rem 0.5rem", color: "var(--text-dim)" }}>Incubator</th>
+                        <th style={{ padding: "0.75rem 0.5rem", color: "var(--text-dim)" }}>
+                          {targetType === "startups" ? "Startup" : "Incubator"}
+                        </th>
                         <th style={{ padding: "0.75rem 0.5rem", color: "var(--text-dim)" }}>Status</th>
                         <th style={{ padding: "0.75rem 0.5rem", color: "var(--text-dim)", textAlign: "center" }}>Lead Score</th>
                         <th style={{ padding: "0.75rem 0.5rem", color: "var(--text-dim)", textAlign: "right" }}>Action</th>
@@ -1363,7 +1392,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                           </td>
                           <td style={{ padding: "0.75rem 0.5rem" }}>
                             <select
-                              value={lead.status}
+                              value={lead.status || "Draft"}
                               onChange={(e) => handleUpdateLeadStatus(lead.id, e.target.value)}
                               style={{ 
                                 fontSize: "0.72rem", 
@@ -1794,7 +1823,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
               <h3 style={{ margin: 0, fontSize: "1.1rem", fontWeight: "700" }}>📅 Scheduled Collaboration Meetings</h3>
             </div>
             
-            {meetings.length === 0 ? (
+            {filteredMeetings.length === 0 ? (
               <div style={{ 
                 padding: "3rem 1rem", 
                 textAlign: "center", 
@@ -1808,7 +1837,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", maxHeight: "400px", overflowY: "auto" }}>
-                {meetings.map((meeting) => (
+                {filteredMeetings.map((meeting) => (
                   <div 
                     key={meeting.id} 
                     style={{ 
@@ -2100,7 +2129,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                                 borderColor: isAlreadyLead ? "rgba(16,185,129,0.2)" : "rgba(0,106,99,0.2)",
                                 fontWeight: "700" 
                               }}
-                              onClick={() => !isAlreadyLead && handleAddLead(inc.id, inc.name, inc.email)}
+                              onClick={() => !isAlreadyLead && handleAddLead(inc)}
                               disabled={isAlreadyLead || addingLeadId === inc.id}
                             >
                               {isAlreadyLead ? "Already in Leads" : addingLeadId === inc.id ? "Adding..." : "Add to Leads"}
@@ -2170,7 +2199,9 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
               <div style={{ display: "flex", flexDirection: "column", gap: "0.85rem" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", background: "var(--bg-surface)", padding: "12px", borderRadius: "8px", border: "1px solid var(--border-color)" }}>
                   <div>
-                    <strong style={{ fontSize: "0.75rem", color: "var(--text-dim)", textTransform: "uppercase" }}>Incubator Partner</strong>
+                    <strong style={{ fontSize: "0.75rem", color: "var(--text-dim)", textTransform: "uppercase" }}>
+                      {selectedLeadForDetail.incubator_id === "incubein_cohort" ? "Startup Partner" : "Incubator Partner"}
+                    </strong>
                     <div style={{ fontWeight: "700", color: "var(--text-primary)", fontSize: "0.95rem", marginTop: "2px" }}>{selectedLeadForDetail.incubator_name}</div>
                     <div style={{ fontSize: "0.8rem", color: "var(--primary)", fontWeight: 500 }}>{selectedLeadForDetail.email}</div>
                   </div>
@@ -2178,7 +2209,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                     <strong style={{ fontSize: "0.75rem", color: "var(--text-dim)", textTransform: "uppercase" }}>Status</strong>
                     <div style={{ marginTop: "0.25rem" }}>
                       <select
-                        value={selectedLeadForDetail.status}
+                        value={selectedLeadForDetail.status || "Draft"}
                         onChange={(e) => handleUpdateLeadStatus(selectedLeadForDetail.id, e.target.value)}
                         className="form-input"
                         style={{ 

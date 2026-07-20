@@ -269,6 +269,18 @@ export default function CohortEvaluator() {
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
           {applications.length > 0 && (
             <>
+              {checkedIds.length > 0 && (
+                <>
+                  <button className="btn btn-primary" onClick={() => handleExportToDb(false)} disabled={exportingDb}>
+                    <Database size={14} style={{ marginRight: "6px" }} />
+                    Add Selected to DB ({checkedIds.length})
+                  </button>
+                  <button className="btn btn-primary" onClick={() => handleExportToCampaign(false)} disabled={exportingCamp}>
+                    <Send size={14} style={{ marginRight: "6px" }} />
+                    Add Selected to Campaign ({checkedIds.length})
+                  </button>
+                </>
+              )}
               <button className="btn btn-secondary" onClick={() => handleExportToDb(true)} disabled={exportingDb}>
                 <Database size={14} style={{ marginRight: "6px" }} />
                 Add All to DB
@@ -473,7 +485,10 @@ export default function CohortEvaluator() {
                           style={{
                             borderBottom: "1px solid var(--border-color)",
                             cursor: "pointer",
-                            background: isSelected ? "var(--primary-light)" : "white",
+                            background: isSelected 
+                              ? "var(--primary-light)" 
+                              : (app.rank <= 3 ? "rgba(16, 185, 129, 0.06)" : "white"),
+                            borderLeft: app.rank <= 3 ? "4px solid #10b981" : "4px solid transparent",
                             transition: "background 0.2s ease",
                           }}
                           className="table-row-hover"
@@ -488,7 +503,7 @@ export default function CohortEvaluator() {
                               width: "24px",
                               height: "24px",
                               borderRadius: "50%",
-                              background: app.rank <= 3 ? "linear-gradient(135deg, #FFD700, #FFA500)" : "var(--bg-dark)",
+                              background: app.rank <= 3 ? "linear-gradient(135deg, #10B981, #059669)" : "var(--bg-dark)",
                               color: app.rank <= 3 ? "white" : "var(--text-primary)",
                               display: "flex",
                               alignItems: "center",
@@ -501,9 +516,26 @@ export default function CohortEvaluator() {
                           </td>
                           <td style={{ padding: "14px 16px" }} onClick={() => setSelectedApp(app)}>
                             <div style={{ display: "flex", flexDirection: "column" }}>
-                              <span style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--text-primary)" }}>
-                                {app.startup_name}
-                              </span>
+                              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                <span style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--text-primary)" }}>
+                                  {app.startup_name}
+                                </span>
+                                {app.rank <= 3 && (
+                                  <span style={{
+                                    padding: "2px 6px",
+                                    borderRadius: "4px",
+                                    fontSize: "0.62rem",
+                                    fontWeight: 800,
+                                    background: "#e6f4ea",
+                                    color: "#137333",
+                                    border: "1px solid #ceead6",
+                                    textTransform: "uppercase",
+                                    letterSpacing: "0.02em"
+                                  }}>
+                                    Top Tier
+                                  </span>
+                                )}
+                              </div>
                               <span style={{ fontSize: "0.72rem", color: "var(--text-muted)" }}>
                                 {app.name}
                               </span>

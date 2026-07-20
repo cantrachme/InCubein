@@ -20,7 +20,8 @@ import {
   Trash2,
   Upload,
   Download,
-  Building2
+  Building2,
+  Rocket
 } from "lucide-react";
 
 // Academic Collaboration Template
@@ -1025,43 +1026,82 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
 
-      {/* Target Type Toggle */}
-      {!defaultTargetType && (
-        <div style={{ display: "flex", justifyContent: "center", marginBottom: "0.5rem" }}>
-          <div style={{ background: "var(--bg-surface)", padding: "4px", borderRadius: "10px", border: "1px solid var(--border-color)", display: "inline-flex", gap: "4px" }}>
-            <button
-              className={`btn ${targetType === "incubators" ? "btn-primary" : ""}`}
-              onClick={() => setTargetType("incubators")}
-              style={{ 
-                minWidth: "160px", 
-                justifyContent: "center",
-                background: targetType === "incubators" ? "var(--primary)" : "transparent",
-                color: targetType === "incubators" ? "white" : "var(--text-muted)",
-                border: "none",
-                boxShadow: targetType === "incubators" ? "var(--shadow-sm)" : "none",
-                fontWeight: targetType === "incubators" ? "700" : "500",
-              }}
-            >
-              Incubator Campaigns
-            </button>
-            <button
-              className={`btn ${targetType === "startups" ? "btn-primary" : ""}`}
-              onClick={() => setTargetType("startups")}
-              style={{ 
-                minWidth: "160px", 
-                justifyContent: "center",
-                background: targetType === "startups" ? "var(--primary)" : "transparent",
-                color: targetType === "startups" ? "white" : "var(--text-muted)",
-                border: "none",
-                boxShadow: targetType === "startups" ? "var(--shadow-sm)" : "none",
-                fontWeight: targetType === "startups" ? "700" : "500",
-              }}
-            >
-              Startup Campaigns
-            </button>
-          </div>
+      {/* Premium Target Type Toggle */}
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: "1.5rem", marginTop: "0.5rem" }} className="animate-in">
+        <div style={{ 
+          background: "rgba(255, 255, 255, 0.7)", 
+          padding: "6px", 
+          borderRadius: "50px", 
+          border: "1px solid rgba(0,0,0,0.08)", 
+          display: "inline-flex", 
+          gap: "4px",
+          position: "relative",
+          boxShadow: "inset 0 2px 4px rgba(0,0,0,0.04)"
+        }}>
+          {/* Animated Background Pill */}
+          <div style={{
+            position: "absolute",
+            top: "6px",
+            left: targetType === "incubators" ? "6px" : "calc(50% + 2px)",
+            width: "calc(50% - 8px)",
+            height: "calc(100% - 12px)",
+            background: "linear-gradient(135deg, var(--primary) 0%, var(--primary-hover) 100%)",
+            borderRadius: "40px",
+            transition: "all 0.4s cubic-bezier(0.25, 1, 0.5, 1)",
+            boxShadow: "0 4px 12px rgba(99, 102, 241, 0.3)"
+          }} />
+
+          <button
+            onClick={() => setTargetType("incubators")}
+            style={{ 
+              minWidth: "190px",
+              padding: "10px 24px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "8px",
+              background: "transparent",
+              color: targetType === "incubators" ? "white" : "var(--text-body)",
+              border: "none",
+              fontWeight: targetType === "incubators" ? "600" : "500",
+              fontSize: "0.95rem",
+              position: "relative",
+              zIndex: 1,
+              transition: "color 0.3s ease",
+              cursor: "pointer",
+              borderRadius: "40px"
+            }}
+          >
+            <Building2 size={16} />
+            Incubator Network
+          </button>
+          
+          <button
+            onClick={() => setTargetType("startups")}
+            style={{ 
+              minWidth: "190px",
+              padding: "10px 24px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "8px",
+              background: "transparent",
+              color: targetType === "startups" ? "white" : "var(--text-body)",
+              border: "none",
+              fontWeight: targetType === "startups" ? "600" : "500",
+              fontSize: "0.95rem",
+              position: "relative",
+              zIndex: 1,
+              transition: "color 0.3s ease",
+              cursor: "pointer",
+              borderRadius: "40px"
+            }}
+          >
+            <Rocket size={16} />
+            Startup Cohort
+          </button>
         </div>
-      )}
+      </div>
 
       {/* Sub Tab Bar Navigation */}
       <div style={{ 

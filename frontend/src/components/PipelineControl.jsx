@@ -16,7 +16,7 @@ export default function PipelineControl({ logs, onRefreshLogs, onRefreshAllData 
     setRunningStage(stageId);
     setStatusMsg(`Initiating stage: ${stageId}...`);
     try {
-      const res = await fetch(`http://127.0.0.1:8000/api/pipeline/run?stage=${stageId}`, {
+      const res = await fetch(`/api/pipeline/run?stage=${stageId}`, {
         method: "POST"
       });
       const data = await res.json();
@@ -43,7 +43,7 @@ export default function PipelineControl({ logs, onRefreshLogs, onRefreshAllData 
     setRunningStage("reset");
     setStatusMsg("Resetting database tables...");
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/pipeline/reset", {
+      const res = await fetch("/api/pipeline/reset", {
         method: "POST"
       });
       if (res.ok) {

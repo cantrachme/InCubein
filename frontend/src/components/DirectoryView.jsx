@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { Search, MapPin, Globe, Mail, Phone, ExternalLink, Calendar, Building, HelpCircle, Layers, FileSignature, Send, X } from "lucide-react";
+import { createPortal } from "react-dom";
+import { toast } from "react-toastify";
+import { Search, MapPin, Globe, Mail, Phone, ExternalLink, Calendar, Building, HelpCircle, Layers, FileSignature, Send, X, Trash2 } from "lucide-react";
 
 export default function DirectoryView({ filtersData, onDraftMou }) {
   const [incubators, setIncubators] = useState([]);
@@ -10,6 +12,23 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
   const [selectedSector, setSelectedSector] = useState("");
   const [selectedRegion, setSelectedRegion] = useState("");
   const [sortMode, setSortMode] = useState("name");
+
+  const handleClearDirectory = async () => {
+    if (!window.confirm("Are you sure you want to clear the entire Incubators Directory? This is irreversible.")) return;
+    try {
+      const res = await fetch("/api/incubators/clear", { method: "POST" });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success(data.message);
+        setIncubators([]);
+      } else {
+        toast.error("Failed to clear directory.");
+      }
+    } catch (e) {
+      toast.error("Network error.");
+    }
+  };
+
   
   // Drawer state
   const [activeDrawerInc, setActiveDrawerInc] = useState(null);
@@ -24,10 +43,37 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
   const [contactStatus, setContactStatus] = useState(null);
 
   // Fetch incubators based on filters
+  const [addingLeadId, setAddingLeadId] = useState(null);
+
+  const handleAddToCampaign = async (inc) => {
+    setAddingLeadId(inc.id);
+    try {
+      const res = await fetch("/api/outreach/add-lead", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          incubator_id: inc.id.toString(),
+          incubator_name: inc.name,
+          email: inc.email || ""
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success(`Successfully added ${inc.name} to campaign leads!`);
+      } else {
+        toast.error(data.detail || "Failed to add lead to campaigns.");
+      }
+    } catch (e) {
+      toast.error("Network error.");
+    } finally {
+      setAddingLeadId(null);
+    }
+  };
+
   const fetchIncubators = async () => {
     setLoading(true);
     try {
-      let url = "http://127.0.0.1:8000/api/incubators?1=1";
+      let url = "/api/incubators?1=1";
       if (searchQuery) url += `&q=${encodeURIComponent(searchQuery)}`;
       if (selectedState) url += `&state=${encodeURIComponent(selectedState)}`;
       if (selectedCity) url += `&city=${encodeURIComponent(selectedCity)}`;
@@ -77,7 +123,7 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
     if (!activeDrawerInc) return;
     setSavingContact(true);
     try {
-      const response = await fetch("http://127.0.0.1:8000/api/incubators/update-contact", {
+      const response = await fetch("/api/incubators/update-contact", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -95,11 +141,11 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
         setIncubators(prev => prev.map(inc => inc.id === updatedInc.id ? updatedInc : inc));
         setIsEditing(false);
       } else {
-        alert("Error saving contact: " + (data.detail || "Unknown error"));
+        toast.error("Error saving contact: " + (data.detail || "Unknown error"));
       }
     } catch (err) {
       console.error(err);
-      alert("Failed to connect to the backend server.");
+      toast.error("Failed to connect to the backend server.");
     } finally {
       setSavingContact(false);
     }
@@ -111,7 +157,7 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
     
     const emailToUse = activeDrawerInc.email || editEmail;
     if (!emailToUse) {
-      alert("No email address available for this incubator. Please click 'Edit Contact' to add one first.");
+      toast.warning("No email address available for this incubator. Please click 'Edit Contact' to add one first.");
       return;
     }
     
@@ -128,7 +174,7 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
     };
     
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/contact/send", {
+      const res = await fetch("/api/contact/send", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -184,10 +230,44 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
     return list;
   };
 
+  const sortedIncubators = getSortedIncubators();
+
   return (
-    <div>
+    <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+      
+      {/* ─── Header ─────────────────────────────────────────────── */}
+      <div style={{
+        background: "white",
+        border: "1px solid var(--border-color)",
+        borderRadius: "var(--radius-xl)",
+        padding: "20px",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center"
+      }}>
+        <div>
+          <h2 style={{ fontSize: "1.15rem", fontWeight: 800, color: "var(--text-primary)" }}>
+            Incubators Directory
+          </h2>
+          <p style={{ fontSize: "0.78rem", color: "var(--text-muted)", margin: 0 }}>
+            Discover and search academic, government, and private TBIs.
+          </p>
+        </div>
+        {incubators.length > 0 && (
+          <button
+            className="btn btn-secondary"
+            onClick={handleClearDirectory}
+            style={{ color: "var(--danger)" }}
+          >
+            <Trash2 size={14} style={{ marginRight: "6px" }} />
+            Reset Directory
+          </button>
+        )}
+      </div>
+
       {/* Filtering Bar */}
-      <div className="filter-bar" style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", marginBottom: "1.5rem" }}>
+      <div className="filter-bar" style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem" }}>
+
         {/* Search */}
         <div style={{ position: "relative", minWidth: "200px", flexGrow: 1 }}>
           <Search size={16} style={{ position: "absolute", left: "10px", top: "12px", color: "var(--text-dim)" }} />
@@ -282,276 +362,205 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
             Reset Filters
           </button>
         )}
-      </div>
+      </div>      
+
+      {/* Result count */}
+      {!loading && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+          <span style={{ fontSize: "0.82rem", color: "var(--text-muted)", fontWeight: 500 }}>
+            Showing <strong style={{ color: "var(--text-primary)" }}>{sortedIncubators.length}</strong> incubators
+            {(searchQuery || selectedState || selectedCity || selectedSector || selectedRegion) && " (filtered)"}
+          </span>
+        </div>
+      )}
 
       {/* Main Grid View */}
       {loading ? (
-        <div className="empty-state">
-          <p>Filtering startup incubators...</p>
+        <div className="directory-grid">
+          {[1,2,3,4,5,6].map(i => (
+            <div key={i} style={{ background: "white", border: "1px solid var(--border-color)", borderRadius: "var(--radius-lg)", padding: 22 }}>
+              <div className="skeleton skeleton-text" style={{ width: "30%", marginBottom: 14 }} />
+              <div className="skeleton skeleton-title" style={{ width: "80%", marginBottom: 8 }} />
+              <div className="skeleton skeleton-text" style={{ width: "100%" }} />
+              <div className="skeleton skeleton-text" style={{ width: "90%", marginBottom: 16 }} />
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <div className="skeleton" style={{ flex: 1, height: 34, borderRadius: 8 }} />
+                <div className="skeleton" style={{ flex: 1, height: 34, borderRadius: 8 }} />
+              </div>
+            </div>
+          ))}
         </div>
-      ) : incubators.length === 0 ? (
+      ) : sortedIncubators.length === 0 ? (
         <div className="empty-state">
+          <div style={{ width: 56, height: 56, borderRadius: "50%", background: "var(--bg-surface)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", border: "1px solid var(--border-color)" }}>
+            <Building size={24} color="var(--text-dim)" />
+          </div>
           <h3>No Incubators Found</h3>
           <p>Adjust your search queries or select different filters.</p>
         </div>
       ) : (
         <div className="directory-grid">
-          {getSortedIncubators().map((inc) => (
-            <div 
-              key={inc.id} 
-              className="glass-card directory-card"
-              style={{ cursor: "pointer" }}
+          {sortedIncubators.map((inc, idx) => {
+            const orgType = (inc.source_url || "").toLowerCase().includes("gov") ? "government" : 
+                           (inc.source_url || "").toLowerCase().includes("corp") ? "corporate" : "academic";
+            return (
+            <div
+              key={inc.id}
+              className={`directory-card type-${orgType}`}
+              style={{ cursor: "pointer", animation: `fadeSlideUp 0.35s var(--ease-out) ${idx * 0.03}s both` }}
               onClick={() => setActiveDrawerInc(inc)}
             >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-                <span style={{ 
-                  fontSize: "0.75rem", 
-                  padding: "2px 8px", 
-                  borderRadius: "4px", 
-                  background: "rgba(6, 182, 212, 0.12)", 
-                  color: "var(--secondary)", 
-                  fontWeight: 600 
-                }}>
-                  {inc.region || "Unknown"}
-                </span>
-                <span style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>
-                  Source: {inc.source_url || "Excel"}
-                </span>
-              </div>
-              
-              <h2 className="card-title">{inc.name}</h2>
-              <p className="card-description">{inc.description}</p>
-              
-              <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", margin: "1rem 0", padding: "0.75rem 0", borderTop: "1px solid var(--border-color)", borderBottom: "1px solid var(--border-color)" }}>
-                {inc.website && (
-                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.85rem" }}>
-                    <Globe size={14} style={{ color: "var(--secondary)", flexShrink: 0 }} />
-                    <a href={inc.website.startsWith("http") ? inc.website : `https://${inc.website}`} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} style={{ color: "var(--text-primary)", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {inc.website}
-                    </a>
-                  </div>
-                )}
-                {inc.email && (
-                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.85rem" }}>
-                    <Mail size={14} style={{ color: "var(--primary)", flexShrink: 0 }} />
-                    <a href={`mailto:${inc.email}`} onClick={(e) => e.stopPropagation()} style={{ color: "var(--text-primary)", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {inc.email}
-                    </a>
-                  </div>
-                )}
-              </div>
-              
-              <div className="card-meta">
-                <div style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}>
-                  <MapPin size={12} style={{ color: "var(--primary)" }} />
-                  <span>{inc.city ? `${inc.city}, ` : ""}{inc.state}</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", height: "100%", minHeight: "60px", padding: "10px" }}>
+                <h2 className="card-title" style={{ margin: 0, flex: 1, fontSize: "1.1rem" }}>{inc.name}</h2>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <button
+                    className="btn btn-primary btn-icon"
+                    style={{ padding: 0, fontSize: "1rem", background: "var(--primary-light)", color: "var(--primary)", borderRadius: "50%", width: "28px", height: "28px", display: "flex", alignItems: "center", justifyContent: "center" }}
+                    onClick={(e) => { e.stopPropagation(); handleAddToCampaign(inc); }}
+                    disabled={addingLeadId === inc.id}
+                    title="Add to Campaign"
+                  >
+                    {addingLeadId === inc.id ? "..." : "+"}
+                  </button>
+                  <button
+                    className="btn btn-primary"
+                    style={{ padding: "5px 16px", fontSize: "0.85rem" }}
+                    onClick={(e) => { e.stopPropagation(); setActiveDrawerInc(inc); }}
+                  >
+                    View
+                  </button>
                 </div>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
       {/* Drawer Details Overlay */}
-      {activeDrawerInc && (
+      {activeDrawerInc && createPortal(
         <div className="drawer-backdrop" onClick={() => setActiveDrawerInc(null)}>
           <div className="drawer-content" onClick={(e) => e.stopPropagation()}>
-            <button className="drawer-close" onClick={() => setActiveDrawerInc(null)}>✕ Close</button>
-            
             <div className="drawer-header">
-              <h2 style={{ fontSize: "1.75rem", fontWeight: "800", color: "white", marginBottom: "0.5rem" }}>{activeDrawerInc.name}</h2>
-              <div style={{ display: "flex", gap: "1rem", color: "var(--text-muted)", fontSize: "0.85rem", alignItems: "center" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}>
-                  <MapPin size={14} style={{ color: "var(--primary)" }} />
-                  <span>{activeDrawerInc.city ? `${activeDrawerInc.city}, ` : ""}{activeDrawerInc.state}</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                  <span className="badge badge-primary">{activeDrawerInc.region || "India"}</span>
+                  <span style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>{activeDrawerInc.source_url || "Excel DB"}</span>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}>
-                  <span style={{ 
-                    fontSize: "0.75rem", 
-                    padding: "2px 8px", 
-                    borderRadius: "4px", 
-                    background: "rgba(6, 182, 212, 0.12)", 
-                    color: "var(--secondary)", 
-                    fontWeight: 600 
-                  }}>
-                    {activeDrawerInc.region || "Unknown"}
-                  </span>
+                <h2 style={{ fontSize: "1.4rem", fontWeight: 800, color: "var(--text-primary)", marginBottom: 6, lineHeight: 1.2 }}>{activeDrawerInc.name}</h2>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.82rem", color: "var(--text-muted)" }}>
+                  <MapPin size={13} color="var(--primary)" />
+                  {activeDrawerInc.city ? `${activeDrawerInc.city}, ` : ""}{activeDrawerInc.state}
                 </div>
               </div>
-            </div>
-
-            {/* Action Buttons: Draft MOU & Schedule Call */}
-            <div className="drawer-section" style={{ borderTop: "none", display: "flex", gap: "0.75rem", paddingBottom: "1.25rem", paddingTop: "0" }}>
-              <button
-                type="button"
-                className="btn btn-primary"
-                style={{ flex: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "0.5rem", padding: "0.6rem" }}
-                onClick={() => {
-                  if (onDraftMou) {
-                    onDraftMou(activeDrawerInc.name);
-                  }
-                }}
-              >
-                <FileSignature size={16} />
-                <span>Draft & Sign MOU</span>
-              </button>
-              
-              <button
-                type="button"
-                className="btn btn-secondary"
-                style={{ flex: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "0.5rem", padding: "0.6rem" }}
-                onClick={() => setIsScheduleModalOpen(true)}
-              >
-                <Calendar size={16} />
-                <span>Contact / Arrange Call</span>
+              <button className="drawer-close" onClick={() => setActiveDrawerInc(null)} aria-label="Close">
+                <X size={18} />
               </button>
             </div>
 
-            {/* Description */}
-            <div className="drawer-section" style={{ borderTop: "1px solid var(--border-color)", paddingTop: "1.25rem" }}>
-              <h3>About</h3>
-              <p style={{ fontSize: "0.9rem", color: "var(--text-muted)", lineHeight: "1.6" }}>{activeDrawerInc.description}</p>
-            </div>
+            {/* Action Buttons */}
+            <div className="drawer-body">
 
-            {/* Contact Details */}
-            <div className="drawer-section">
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem" }}>
-                <h3 style={{ margin: 0 }}>Contact Info</h3>
-                {!isEditing && (
-                  <button 
-                    className="btn btn-secondary" 
-                    style={{ padding: "0.25rem 0.5rem", fontSize: "0.75rem" }} 
-                    onClick={() => setIsEditing(true)}
-                  >
-                    Edit Contact
-                  </button>
+
+              {/* About */}
+              <div className="drawer-section" style={{ borderTop: "none", paddingTop: 0 }}>
+                <h3>About</h3>
+                <p style={{ fontSize: "0.875rem", color: "var(--text-body)", lineHeight: 1.65 }}>{activeDrawerInc.description || "No description available."}</p>
+              </div>
+
+              {/* Contact Details */}
+              <div className="drawer-section">
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                  <h3 style={{ margin: 0 }}>Contact Info</h3>
+                  {!isEditing && (
+                    <button className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: "0.75rem" }} onClick={() => setIsEditing(true)}>
+                      Edit
+                    </button>
+                  )}
+                </div>
+
+                {isEditing ? (
+                  <form onSubmit={handleSaveContactInfo} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                      <div className="form-group">
+                        <label>Website URL</label>
+                        <input type="text" className="form-input" value={editWebsite} onChange={(e) => setEditWebsite(e.target.value)} placeholder="https://example.org" />
+                      </div>
+                      <div className="form-group">
+                        <label>Email Address</label>
+                        <input type="email" className="form-input" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} placeholder="contact@domain.org" />
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                      <button type="button" className="btn btn-secondary" onClick={() => setIsEditing(false)} disabled={savingContact}>Cancel</button>
+                      <button type="submit" className="btn btn-primary" disabled={savingContact}>{savingContact ? "Saving..." : "Save Changes"}</button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="details-grid">
+                    <div>
+                      <div className="detail-item-label">Website</div>
+                      {activeDrawerInc.website ? (
+                        <div className="detail-item-val">
+                          <a href={activeDrawerInc.website.startsWith("http") ? activeDrawerInc.website : `https://${activeDrawerInc.website}`} target="_blank" rel="noreferrer" style={{ color: "var(--primary)", display: "flex", alignItems: "center", gap: 5, textDecoration: "none", fontSize: "0.85rem" }}>
+                            <Globe size={13} />{activeDrawerInc.website.replace(/https?:\/\//, "")}<ExternalLink size={11} />
+                          </a>
+                        </div>
+                      ) : <div className="detail-item-val" style={{ color: "var(--text-dim)", fontStyle: "italic" }}>Not Available</div>}
+                    </div>
+                    <div>
+                      <div className="detail-item-label">Email</div>
+                      {activeDrawerInc.email ? (
+                        <div className="detail-item-val">
+                          <a href={`mailto:${activeDrawerInc.email}`} style={{ color: "var(--text-body)", display: "flex", alignItems: "center", gap: 5, textDecoration: "none", fontSize: "0.85rem" }}>
+                            <Mail size={13} />{activeDrawerInc.email}
+                          </a>
+                        </div>
+                      ) : <div className="detail-item-val" style={{ color: "var(--text-dim)", fontStyle: "italic" }}>Not Available</div>}
+                    </div>
+                  </div>
                 )}
               </div>
 
-              {isEditing ? (
-                <form onSubmit={handleSaveContactInfo} style={{ display: "flex", flexDirection: "column", gap: "1rem", marginTop: "0.5rem" }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
-                    <div>
-                      <label style={{ display: "block", fontSize: "0.8rem", fontWeight: "600", marginBottom: "0.25rem", color: "var(--text-dim)" }}>Website URL</label>
-                      <input 
-                        type="text" 
-                        className="search-input" 
-                        style={{ width: "100%", padding: "0.5rem", fontSize: "0.85rem", background: "#f8fafc", color: "var(--text-primary)", border: "1px solid var(--border-color)" }}
-                        value={editWebsite}
-                        onChange={(e) => setEditWebsite(e.target.value)}
-                        placeholder="e.g. https://sine.iitb.ac.in"
-                      />
-                    </div>
-                    <div>
-                      <label style={{ display: "block", fontSize: "0.8rem", fontWeight: "600", marginBottom: "0.25rem", color: "var(--text-dim)" }}>Email Address</label>
-                      <input 
-                        type="email" 
-                        className="search-input" 
-                        style={{ width: "100%", padding: "0.5rem", fontSize: "0.85rem", background: "#f8fafc", color: "var(--text-primary)", border: "1px solid var(--border-color)" }}
-                        value={editEmail}
-                        onChange={(e) => setEditEmail(e.target.value)}
-                        placeholder="e.g. contact@domain.org"
-                      />
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end" }}>
-                    <button 
-                      type="button"
-                      className="btn btn-secondary" 
-                      style={{ padding: "0.4rem 0.8rem", fontSize: "0.8rem" }}
-                      onClick={() => setIsEditing(false)}
-                      disabled={savingContact}
-                    >
-                      Cancel
-                    </button>
-                    <button 
-                      type="submit"
-                      className="btn btn-primary" 
-                      style={{ padding: "0.4rem 0.8rem", fontSize: "0.8rem" }}
-                      disabled={savingContact}
-                    >
-                      {savingContact ? "Saving..." : "Save Changes"}
-                    </button>
-                  </div>
-                </form>
-              ) : (
-                <div className="details-grid">
-                  <div>
-                    <div className="detail-item-label">Website</div>
-                    {activeDrawerInc.website ? (
-                      <div className="detail-item-val">
-                        <a href={activeDrawerInc.website.startsWith("http") ? activeDrawerInc.website : `https://${activeDrawerInc.website}`} target="_blank" rel="noreferrer" style={{ color: "var(--secondary)", display: "flex", alignItems: "center", gap: "0.25rem", textDecoration: "none" }}>
-                          <Globe size={14} />
-                          <span>{activeDrawerInc.website}</span>
-                          <ExternalLink size={12} />
-                        </a>
-                      </div>
-                    ) : (
-                      <div className="detail-item-val" style={{ color: "var(--text-dim)", fontStyle: "italic", fontSize: "0.85rem" }}>
-                        Not Available
-                      </div>
-                    )}
-                  </div>
-                  <div>
-                    <div className="detail-item-label">Email</div>
-                    {activeDrawerInc.email ? (
-                      <div className="detail-item-val">
-                        <a href={`mailto:${activeDrawerInc.email}`} style={{ color: "var(--text-primary)", display: "flex", alignItems: "center", gap: "0.25rem", textDecoration: "none" }}>
-                          <Mail size={14} />
-                          <span>{activeDrawerInc.email}</span>
-                        </a>
-                      </div>
-                    ) : (
-                      <div className="detail-item-val" style={{ color: "var(--text-dim)", fontStyle: "italic", fontSize: "0.85rem" }}>
-                        Not Available
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Focus Sectors */}
-            <div className="drawer-section">
-              <h3>Focus Sectors</h3>
-              <div className="tag-cloud">
-                {activeDrawerInc.focus_areas && activeDrawerInc.focus_areas.map(area => (
-                  <span key={area} className="tag-pill" style={{ color: "white", borderColor: "rgba(139, 92, 246, 0.4)", background: "rgba(139, 92, 246, 0.05)" }}>
-                    {area}
-                  </span>
-                ))}
-                {(!activeDrawerInc.focus_areas || activeDrawerInc.focus_areas.length === 0) && <span style={{ color: "var(--text-dim)", fontSize: "0.85rem" }}>Multi-sector incubator</span>}
-              </div>
-            </div>
-
-            {/* Source Information */}
-            <div className="drawer-section">
-              <h3>Funding Source</h3>
-              <div className="details-grid">
-                <div>
-                  <div className="detail-item-label">Scheme / Program Source</div>
-                  <div className="detail-item-val" style={{ fontWeight: "600", color: "var(--accent-amber)" }}>{activeDrawerInc.source_url || "Excel"}</div>
+              {/* Focus Sectors */}
+              <div className="drawer-section">
+                <h3>Focus Sectors</h3>
+                <div className="tag-cloud">
+                  {activeDrawerInc.focus_areas?.map(area => (
+                    <span key={area} className="tag-pill">{area}</span>
+                  ))}
+                  {(!activeDrawerInc.focus_areas || activeDrawerInc.focus_areas.length === 0) && (
+                    <span style={{ color: "var(--text-dim)", fontSize: "0.85rem" }}>Multi-sector incubator</span>
+                  )}
                 </div>
               </div>
-            </div>
+
+              {/* Source */}
+              <div className="drawer-section">
+                <h3>Data Source</h3>
+                <div className="detail-item-val">
+                  <span className="badge badge-warning">{activeDrawerInc.source_url || "Excel DB"}</span>
+                </div>
+              </div>
+            </div>{/* end drawer-body */}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Schedule / Contact Modal */}
       {isScheduleModalOpen && activeDrawerInc && (
-        <div className="drawer-backdrop" style={{ zIndex: 10000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setIsScheduleModalOpen(false)}>
-          <div className="glass-card" style={{ width: "90%", maxWidth: "550px", padding: "2rem", background: "#ffffff", border: "1px solid var(--border-color)", boxShadow: "0 20px 40px rgba(0,0,0,0.1)", zIndex: 10001 }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem", borderBottom: "1px solid var(--border-color)", paddingBottom: "0.75rem" }}>
-              <h3 style={{ margin: 0, fontSize: "1.25rem", color: "var(--primary)", fontWeight: 800 }}>
-                📅 Contact & Schedule Call
-              </h3>
-              <button 
-                type="button" 
-                style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-dim)" }} 
-                onClick={() => setIsScheduleModalOpen(false)}
-              >
-                <X size={20} />
+        <div className="modal-backdrop" style={{ zIndex: 10000 }} onClick={() => setIsScheduleModalOpen(false)}>
+          <div className="modal-card" style={{ zIndex: 10001, maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24, borderBottom: "1px solid var(--border-color)", paddingBottom: 16 }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: "1.1rem", color: "var(--text-primary)", fontWeight: 800 }}>
+                  Contact & Schedule Call
+                </h3>
+                <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginTop: 3 }}>{activeDrawerInc.name}</p>
+              </div>
+              <button className="btn btn-ghost btn-icon" onClick={() => setIsScheduleModalOpen(false)}>
+                <X size={18} />
               </button>
             </div>
             
@@ -644,7 +653,8 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
               </div>
             </form>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

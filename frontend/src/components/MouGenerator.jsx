@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { toast } from "react-toastify";
 import { PenTool, Send, Trash2, Award, FileText, CheckCircle2, Maximize2, Minimize2, Upload, Download, Printer, RefreshCcw } from "lucide-react";
 
 const TEMPLATES = {
@@ -179,7 +180,7 @@ export default function MouGenerator({ preselectedIncubatorName }) {
   const [signatureData, setSignatureData] = useState(null);
   
   // Email sending states
-  const [emailRecipient, setEmailRecipient] = useState("abcd@rtmun.ac.in");
+  const [emailRecipient, setEmailRecipient] = useState("contact@incubein.com");
   const [sendingEmail, setSendingEmail] = useState(false);
   const [emailStatus, setEmailStatus] = useState(null); // { type: 'success'|'error'|'mock', message: '' }
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -190,7 +191,7 @@ export default function MouGenerator({ preselectedIncubatorName }) {
   useEffect(() => {
     const fetchIncubators = async () => {
       try {
-        const res = await fetch("http://127.0.0.1:8000/api/incubators");
+        const res = await fetch("/api/incubators");
         const data = await res.json();
         setIncubators(data);
         
@@ -314,7 +315,7 @@ export default function MouGenerator({ preselectedIncubatorName }) {
     // Check if canvas is empty before adopting
     const isEmpty = isCanvasEmpty(canvas);
     if (isEmpty) {
-      alert("Please draw your signature on the canvas first.");
+      toast.warning("Please draw your signature on the canvas first.");
       return;
     }
     const dataUrl = canvas.toDataURL("image/png");
@@ -334,7 +335,7 @@ export default function MouGenerator({ preselectedIncubatorName }) {
     if (!file) return;
 
     if (!file.type.startsWith("image/")) {
-      alert("Please select a valid image file (PNG/JPG).");
+      toast.warning("Please select a valid image file (PNG/JPG).");
       return;
     }
 
@@ -381,7 +382,7 @@ export default function MouGenerator({ preselectedIncubatorName }) {
 
   const handleDownloadTxt = () => {
     if (!mouText) {
-      alert("No MOU content to download.");
+      toast.warning("No MOU content to download.");
       return;
     }
     const title = TEMPLATES[mouType]?.title || "Memorandum of Understanding";
@@ -400,7 +401,7 @@ export default function MouGenerator({ preselectedIncubatorName }) {
   const handlePrint = () => {
     const printWindow = window.open("", "_blank");
     if (!printWindow) {
-      alert("Please allow pop-ups to print the document.");
+      toast.warning("Please allow pop-ups to print the document.");
       return;
     }
 
@@ -519,19 +520,19 @@ export default function MouGenerator({ preselectedIncubatorName }) {
   const handleSendMou = async (e) => {
     e.preventDefault();
     if (!selectedIncId) {
-      alert("Please select a Party A Incubator.");
+      toast.warning("Please select a Party A Incubator.");
       return;
     }
     if (!partyBName) {
-      alert("Please enter Party B Name.");
+      toast.warning("Please enter Party B Name.");
       return;
     }
     if (!signatureData) {
-      alert("Please draw and adopt your digital signature first.");
+      toast.warning("Please draw and adopt your digital signature first.");
       return;
     }
     if (!emailRecipient) {
-      alert("Please enter a recipient email address.");
+      toast.warning("Please enter a recipient email address.");
       return;
     }
 
@@ -550,7 +551,7 @@ export default function MouGenerator({ preselectedIncubatorName }) {
     };
 
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/mou/send", {
+      const res = await fetch("/api/mou/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(postData)

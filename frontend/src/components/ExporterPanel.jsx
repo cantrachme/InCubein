@@ -3,7 +3,7 @@ import { Download, FileJson, FileSpreadsheet, Database, Network } from "lucide-r
 
 export default function ExporterPanel() {
   const triggerDownload = (format) => {
-    window.open(`http://127.0.0.1:8000/api/export/${format}`, "_blank");
+    window.open(`/api/export/${format}`, "_blank");
   };
 
   return (

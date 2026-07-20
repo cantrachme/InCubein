@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { toast } from "react-toastify";
 import { 
   Mail, 
   MessageSquare, 
@@ -18,7 +19,8 @@ import {
   PenTool,
   Trash2,
   Upload,
-  Download
+  Download,
+  Building2
 } from "lucide-react";
 
 // Academic Collaboration Template
@@ -69,18 +71,57 @@ NOW, THEREFORE, THE PARTIES AGREE AS FOLLOWS:
 
 IN WITNESS WHEREOF, the Parties hereto have signed and executed this Memorandum of Understanding on the date and year first written above.`;
 
-export default function OutreachAutomation({ preselectedIncubatorName, refreshTrigger }) {
+
+const PREDEFINED_TEMPLATES = {
+  incubation: {
+    name: "Incubation Seat Offer",
+    subject: "INCUBEIN Cohort: Incubation Seat Offer - {StartupName}",
+    body: "Dear Founder,\n\nWe are pleased to inform you that {StartupName} has been selected for incubation in the INCUBEIN Startup Cohort!\n\nOur evaluation committee was highly impressed by your application. We will follow up shortly with formal onboarding details.\n\nBest regards,\nINCUBEIN Foundation Team"
+  },
+  deck_request: {
+    name: "Pitch Deck Request",
+    subject: "INCUBEIN Cohort: Pitch Deck Request - {StartupName}",
+    body: "Dear Founder,\n\nThank you for applying to the INCUBEIN Startup Program.\n\nWe have completed our initial screening. To assist in our final ranking, please reply with your latest presentation deck and financial roadmap.\n\nBest regards,\nINCUBEIN Foundation Team"
+  },
+  interview: {
+    name: "Selection Interview Invite",
+    subject: "INCUBEIN Cohort: Selection Interview - {StartupName}",
+    body: "Dear Founder,\n\nCongratulations! {StartupName} has shortlisted for the final interview phase of the INCUBEIN Cohort.\n\nPlease select a convenient slot to schedule a 15-minute pitch session with our selection committee.\n\nBest regards,\nINCUBEIN Foundation Team"
+  }
+};
+
+export default function OutreachAutomation({ preselectedIncubatorName, refreshTrigger, defaultTargetType }) {
   const [leads, setLeads] = useState([]);
+
+  const [targetType, setTargetType] = useState(defaultTargetType || "incubators"); // 'incubators' or 'startups'
+
+  useEffect(() => {
+    if (defaultTargetType) {
+      setTargetType(defaultTargetType);
+    }
+  }, [defaultTargetType]);
+  const [selectedTemplateKey, setSelectedTemplateKey] = useState("incubation");
+
   const [meetings, setMeetings] = useState([]);
   const [incubators, setIncubators] = useState([]);
   const [externalEvents, setExternalEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [resetting, setResetting] = useState(false);
   const [checkingReplies, setCheckingReplies] = useState(false);
+  const [checkingFollowups, setCheckingFollowups] = useState(false);
+  const [followupDelay, setFollowupDelay] = useState(120);
   
   // Active workflow node (for flowchart animation highlight)
   // 1: Send, 2: Reply, 3: AI intent, 4: Score, 5: Calendar
   const [activeWorkflowNode, setActiveWorkflowNode] = useState(0);
+  const [activeSubTab, setActiveSubTab] = useState("campaigns");
+
+  // Ensure invalid tabs for startups are deselected automatically
+  useEffect(() => {
+    if (targetType === "startups" && (activeSubTab === "mou" || activeSubTab === "discover")) {
+      setActiveSubTab("campaigns");
+    }
+  }, [targetType, activeSubTab]);
   
   // Terminal logs state
   const [terminalLogs, setTerminalLogs] = useState([
@@ -139,6 +180,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   const [leadSearchQuery, setLeadSearchQuery] = useState("");
   const [leadSelectedStatus, setLeadSelectedStatus] = useState("");
   const [leadNotesInput, setLeadNotesInput] = useState("");
+  const [leadNextActionDateInput, setLeadNextActionDateInput] = useState("");
 
   // Unique filter lists extracted dynamically
   const regionsList = ["North", "South", "East", "West", "Central", "Northeast"];
@@ -228,16 +270,32 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   }, [dirSearchQuery, dirSelectedState, dirSelectedRegion, dirSelectedSector, dirMinStars]);
 
   // Filter campaign leads
+  // Filter campaign leads
   const filteredLeads = leads.filter(lead => {
+    // Target Type filtering
+    if (targetType === "startups") {
+      if (lead.incubator_id !== "incubein_cohort") return false;
+    } else {
+      if (lead.incubator_id === "incubein_cohort") return false;
+    }
+
     if (leadSearchQuery && 
         !lead.incubator_name.toLowerCase().includes(leadSearchQuery.toLowerCase()) && 
-        !lead.email.toLowerCase().includes(leadSearchQuery.toLowerCase())) {
+        !(lead.email || "").toLowerCase().includes(leadSearchQuery.toLowerCase())) {
       return false;
     }
     if (leadSelectedStatus && lead.status !== leadSelectedStatus) {
       return false;
     }
     return true;
+  });
+
+  const filteredMeetings = meetings.filter(meeting => {
+    if (targetType === "startups") {
+      return meeting.incubator_id === "incubein_cohort";
+    } else {
+      return meeting.incubator_id !== "incubein_cohort";
+    }
   });
 
   // Reset page to 1 when filters change
@@ -257,8 +315,10 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   useEffect(() => {
     if (selectedLeadForDetail) {
       setLeadNotesInput(selectedLeadForDetail.notes || "");
+      setLeadNextActionDateInput(selectedLeadForDetail.next_action_date || "");
     } else {
       setLeadNotesInput("");
+      setLeadNextActionDateInput("");
     }
   }, [selectedLeadForDetail]);
 
@@ -284,33 +344,38 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   const fetchData = async () => {
     setLoading(true);
     try {
-      const leadsRes = await fetch("http://127.0.0.1:8000/api/outreach/leads");
+      const leadsRes = await fetch("/api/outreach/leads", { cache: "no-store" });
       const leadsData = await leadsRes.json();
       setLeads(leadsData);
       
-      const meetingsRes = await fetch("http://127.0.0.1:8000/api/outreach/meetings");
+      const meetingsRes = await fetch("/api/outreach/meetings", { cache: "no-store" });
       const meetingsData = await meetingsRes.json();
       setMeetings(meetingsData);
 
-      const incsRes = await fetch("http://127.0.0.1:8000/api/incubators");
+      const incsRes = await fetch("/api/incubators", { cache: "no-store" });
       const incsData = await incsRes.json();
       setIncubators(incsData);
 
       // Fetch external events using the Google Calendar API key
       try {
-        const calendarRes = await fetch("http://127.0.0.1:8000/api/outreach/calendar-events");
+        const calendarRes = await fetch("/api/outreach/calendar-events", { cache: "no-store" });
         const calendarData = await calendarRes.json();
         setExternalEvents(calendarData.events || []);
       } catch (calErr) {
         console.error("Error fetching calendar events:", calErr);
       }
 
-      // Fetch auto-scan interval config
+      // Fetch auto-scan interval and followup delay config
       try {
-        const configRes = await fetch("http://127.0.0.1:8000/api/outreach/config");
+        const configRes = await fetch("/api/outreach/config");
         const configData = await configRes.json();
-        if (configData && typeof configData.sync_interval === "number") {
-          setSyncInterval(configData.sync_interval);
+        if (configData) {
+          if (typeof configData.sync_interval === "number") {
+            setSyncInterval(configData.sync_interval);
+          }
+          if (typeof configData.followup_delay === "number") {
+            setFollowupDelay(configData.followup_delay);
+          }
         }
       } catch (configErr) {
         console.error("Error fetching sync config:", configErr);
@@ -318,7 +383,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
 
       // Fetch OAuth configuration & authorization status
       try {
-        const oauthRes = await fetch("http://127.0.0.1:8000/api/outreach/oauth-status");
+        const oauthRes = await fetch("/api/outreach/oauth-status");
         const oauthData = await oauthRes.json();
         if (oauthData) {
           setOauthConfigured(oauthData.is_configured);
@@ -339,15 +404,34 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
     setSyncInterval(newVal);
     addLog("SYSTEM", `Changing auto scan interval to ${newVal === 0 ? "Disabled (Manual Check Only)" : `${newVal} seconds`}...`);
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/outreach/config", {
+      const res = await fetch("/api/outreach/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sync_interval: newVal })
+        body: JSON.stringify({ sync_interval: newVal, followup_delay: followupDelay })
       });
       if (res.ok) {
         addLog("SYSTEM", `Auto scan interval successfully updated to ${newVal === 0 ? "Disabled" : `${newVal} seconds`}.`);
       } else {
         addLog("ERROR", "Failed to persist scan interval setting on backend.");
+      }
+    } catch (err) {
+      addLog("ERROR", "Failed to connect to backend configuration API.");
+    }
+  };
+
+  const handleFollowupDelayChange = async (newVal) => {
+    setFollowupDelay(newVal);
+    addLog("SYSTEM", `Changing follow-up delay to ${newVal} seconds...`);
+    try {
+      const res = await fetch("/api/outreach/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sync_interval: syncInterval, followup_delay: newVal })
+      });
+      if (res.ok) {
+        addLog("SYSTEM", `Follow-up delay successfully updated to ${newVal} seconds.`);
+      } else {
+        addLog("ERROR", "Failed to persist follow-up delay setting on backend.");
       }
     } catch (err) {
       addLog("ERROR", "Failed to connect to backend configuration API.");
@@ -360,7 +444,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
     addLog("OUTREACH", `Adding ${inc.name} (${leadEmail}) to outreach campaign...`);
     
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/outreach/add-lead", {
+      const res = await fetch("/api/outreach/add-lead", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -374,7 +458,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
       if (res.ok) {
         if (data.status === "exists") {
           addLog("SYSTEM", `${inc.name} is already a lead in this campaign.`);
-          alert(`${inc.name} is already a lead in this campaign.`);
+          toast.warning(`${inc.name} is already a lead in this campaign.`);
         } else {
           addLog("OUTREACH", `Successfully added ${inc.name} to campaigns as Draft.`);
           await fetchData();
@@ -391,15 +475,15 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
 
   const handleAuthorizeCalendar = async () => {
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/outreach/authorize");
+      const res = await fetch("/api/outreach/authorize");
       const data = await res.json();
       if (res.ok && data.authorization_url) {
         window.open(data.authorization_url, "_blank");
       } else {
-        alert(data.detail || "Failed to generate authorization URL.");
+        toast.error(data.detail || "Failed to generate authorization URL.");
       }
     } catch (err) {
-      alert("Failed to connect to backend authorization service.");
+      toast.error("Failed to connect to backend authorization service.");
     }
   };
 
@@ -419,12 +503,12 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
     if (syncInterval > 0) {
       const intervalId = setInterval(async () => {
         try {
-          const leadsRes = await fetch("http://127.0.0.1:8000/api/outreach/leads");
+          const leadsRes = await fetch("/api/outreach/leads", { cache: "no-store" });
           if (leadsRes.ok) {
             const leadsData = await leadsRes.json();
             setLeads(leadsData);
           }
-          const meetingsRes = await fetch("http://127.0.0.1:8000/api/outreach/meetings");
+          const meetingsRes = await fetch("/api/outreach/meetings", { cache: "no-store" });
           if (meetingsRes.ok) {
             const meetingsData = await meetingsRes.json();
             setMeetings(meetingsData);
@@ -465,7 +549,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
     setResetting(true);
     setActiveWorkflowNode(0);
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/outreach/reset", { method: "POST" });
+      const res = await fetch("/api/outreach/reset", { method: "POST" });
       const data = await res.json();
       if (res.ok) {
         addLog("SYSTEM", "Campaign simulation data successfully reset.");
@@ -483,7 +567,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   const handleUpdateMeetingStatus = async (meetingId, newStatus) => {
     addLog("CALENDAR", `Updating meeting status to '${newStatus}' for meeting ID: ${meetingId}...`);
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/outreach/meetings/update-status", {
+      const res = await fetch("/api/outreach/meetings/update-status", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ meeting_id: meetingId, status: newStatus })
@@ -503,7 +587,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   const handleUpdateLeadStatus = async (leadId, newStatus) => {
     addLog("SYSTEM", `Updating campaign lead status to '${newStatus}'...`);
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/outreach/leads/update-status", {
+      const res = await fetch("/api/outreach/leads/update-status", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ lead_id: leadId, status: newStatus })
@@ -523,22 +607,22 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
     }
   };
 
-  const handleUpdateLeadNotes = async (leadId, notesText) => {
-    addLog("SYSTEM", `Saving CRM notes for campaign lead...`);
+  const handleUpdateLeadNotes = async (leadId, notesText, nextActionDate) => {
+    addLog("SYSTEM", `Saving CRM notes and schedule for campaign lead...`);
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/outreach/leads/update-notes", {
+      const res = await fetch("/api/outreach/leads/update-notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lead_id: leadId, notes: notesText })
+        body: JSON.stringify({ lead_id: leadId, notes: notesText, next_action_date: nextActionDate })
       });
       const data = await res.json();
       if (res.ok) {
         addLog("SYSTEM", `CRM notes saved successfully.`);
         await fetchData();
         if (selectedLeadForDetail && selectedLeadForDetail.id === leadId) {
-          setSelectedLeadForDetail(prev => ({ ...prev, notes: notesText }));
+          setSelectedLeadForDetail(prev => ({ ...prev, notes: notesText, next_action_date: nextActionDate }));
         }
-        alert("Notes saved successfully!");
+        toast.success("Notes saved successfully!");
       } else {
         addLog("ERROR", `Failed to save notes: ${data.detail || "Server error"}`);
       }
@@ -550,7 +634,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   const handleExportLeadsToCsv = () => {
     addLog("SYSTEM", "Compiling campaign leads dataset to CSV...");
     if (leads.length === 0) {
-      alert("No leads available to export.");
+      toast.warning("No leads available to export.");
       return;
     }
     
@@ -595,7 +679,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
     addLog("CALENDAR", `Requesting Google Calendar Meet scheduling for ${selectedLeadForMeeting.incubator_name} on ${meetingDate} at ${meetingTime}...`);
     
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/outreach/schedule-meeting", {
+      const res = await fetch("/api/outreach/schedule-meeting", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -608,30 +692,44 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
       const data = await res.json();
       if (res.ok) {
         addLog("CALENDAR", `Meeting successfully scheduled! Meet Link: ${data.meeting_link}`);
-        alert(`Meeting successfully scheduled! Email invite sent to ${selectedLeadForMeeting.email}.`);
+        toast.success(`Meeting successfully scheduled! Email invite sent to ${selectedLeadForMeeting.email}.`);
         setSelectedLeadForMeeting(null);
         await fetchData();
       } else {
         addLog("ERROR", `Failed to schedule meeting: ${data.detail || "Server error"}`);
-        alert(`Error: ${data.detail || "Failed to schedule meeting"}`);
+        toast.error(`Error: ${data.detail || "Failed to schedule meeting"}`);
       }
     } catch (err) {
       addLog("ERROR", "Failed to connect to backend schedule-meeting API.");
-      alert("Failed to connect to backend schedule-meeting API.");
+      toast.error("Failed to connect to backend schedule-meeting API.");
     } finally {
       setSchedulingMeeting(false);
     }
   };
 
+  
   const handleSendEmail = async (leadId, leadName, leadEmail) => {
-    addLog("OUTREACH", `Triggering outreach partnership invitation email to ${leadName} (${leadEmail})...`);
+    addLog("OUTREACH", `Triggering outreach email to ${leadName} (${leadEmail})...`);
     setActiveWorkflowNode(1);
     
+    let payload = { lead_id: leadId };
+    
+    if (targetType === "startups") {
+      const template = PREDEFINED_TEMPLATES[selectedTemplateKey];
+      const compiledSubject = template.subject.replace(/{StartupName}/g, leadName);
+      const compiledBody = template.body.replace(/{StartupName}/g, leadName);
+      payload = {
+        lead_id: leadId,
+        subject: compiledSubject,
+        body: compiledBody
+      };
+    }
+    
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/outreach/send-email", {
+      const res = await fetch("/api/outreach/send-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lead_id: leadId })
+        body: JSON.stringify(payload)
       });
       const data = await res.json();
       
@@ -648,13 +746,64 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
       setActiveWorkflowNode(0);
     }
   };
+ 
+  const handleSendFollowup = async (leadId, leadName, leadEmail) => {
+    addLog("OUTREACH", `Triggering outreach partnership follow-up email to ${leadName} (${leadEmail})...`);
+    
+    try {
+      const res = await fetch("/api/outreach/send-followup-single", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lead_id: leadId })
+      });
+      const data = await res.json();
+      
+      if (res.ok) {
+        addLog("OUTREACH", `Followup successfully dispatched. Status: Follow-up Sent.`);
+        toast.success(`Follow-up email sent to ${leadName}!`);
+        await fetchData();
+      } else {
+        addLog("ERROR", `Failed to send followup: ${data.detail || "Server error"}`);
+        toast.error(`Failed to send followup: ${data.detail || "Server error"}`);
+      }
+    } catch (err) {
+      addLog("ERROR", "Connection to backend followup API failed.");
+    }
+  };
+
+  const handleTriggerFollowups = async () => {
+    setCheckingFollowups(true);
+    addLog("SYSTEM", "Scanning for leads due for partnership follow-up emails...");
+    
+    try {
+      const res = await fetch("/api/outreach/send-followups", { method: "POST" });
+      const data = await res.json();
+      
+      if (res.ok) {
+        const count = data.followups_sent_count || 0;
+        addLog("SYSTEM", `Follow-up scan complete. Sent ${count} follow-up email(s).`);
+        if (count > 0 && data.dispatched) {
+          data.dispatched.forEach(item => {
+            addLog("OUTREACH", `Dispatched follow-up #${item.followup_number} to ${item.incubator_name} (${item.email}). Status: ${item.status}.`);
+          });
+        }
+        await fetchData();
+      } else {
+        addLog("ERROR", `Follow-up scan failed: ${data.detail || "Server error"}`);
+      }
+    } catch (err) {
+      addLog("ERROR", "Connection to backend follow-up trigger API failed.");
+    } finally {
+      setCheckingFollowups(false);
+    }
+  };
 
   const handleCheckReplies = async () => {
     setCheckingReplies(true);
     addLog("SYSTEM", "Connecting to IMAP inbox to scan for unread responses...");
     
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/outreach/check-replies", { method: "POST" });
+      const res = await fetch("/api/outreach/check-replies", { method: "POST" });
       const data = await res.json();
       
       if (res.ok) {
@@ -740,7 +889,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
     const isEmpty = !buffer.some(color => color !== 0);
     
     if (isEmpty) {
-      alert("Please draw your signature first.");
+      toast.warning("Please draw your signature first.");
       return;
     }
     
@@ -754,7 +903,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
     if (!file) return;
 
     if (!file.type.startsWith("image/")) {
-      alert("Please upload a valid image file.");
+      toast.warning("Please upload a valid image file.");
       return;
     }
 
@@ -792,11 +941,11 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   const handleSendMou = async (e) => {
     e.preventDefault();
     if (!selectedIncId) {
-      alert("Please select First Party Incubator.");
+      toast.warning("Please select First Party Incubator.");
       return;
     }
     if (!signatureData) {
-      alert("Please draw or upload and adopt your digital signature first.");
+      toast.warning("Please draw or upload and adopt your digital signature first.");
       return;
     }
 
@@ -824,7 +973,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
         targetSectors
       };
 
-      const res = await fetch("http://127.0.0.1:8000/api/mou/send", {
+      const res = await fetch("/api/mou/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -869,175 +1018,606 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   };
 
   // Metrics
-  const totalSent = leads.filter(l => l.status !== "Draft").length;
-  const totalReplies = leads.filter(l => ["Replied", "Meeting Scheduled", "Not Interested"].includes(l.status)).length;
-  const totalMeetings = meetings.length;
+  const totalSent = filteredLeads.filter(l => l.status !== "Draft").length;
+  const totalReplies = filteredLeads.filter(l => ["Replied", "Meeting Scheduled", "Not Interested"].includes(l.status)).length;
+  const totalMeetings = filteredMeetings.length;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
-      
-      {/* Campaign Controls Card */}
-      <div className="glass-card" style={{ padding: "1.5rem" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "1rem" }}>
-          <div>
-            <h3 style={{ margin: 0, fontSize: "1.1rem", fontWeight: "700" }}>
-              ⚡ Email Outreach Campaign Management
-            </h3>
-            <p style={{ margin: 0, fontSize: "0.8rem", color: "var(--text-dim)" }}>
-              Coordinate email outreach invites, check live inbox replies, and monitor automated follow-up calendar schedules.
-            </p>
-          </div>
-          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.35rem", marginRight: "0.5rem" }}>
-              <span style={{ fontSize: "0.8rem", color: "#000000", whiteSpace: "nowrap", fontWeight: "600" }}>Auto Scan:</span>
-              <select 
-                className="form-input" 
-                style={{ padding: "0.25rem 0.5rem", fontSize: "0.8rem", width: "130px", height: "32px", color: "black", background: "#f8fafc", border: "1px solid var(--border-color)", borderRadius: "4px", margin: 0 }}
-                value={syncInterval}
-                onChange={(e) => handleIntervalChange(parseInt(e.target.value))}
-              >
-                <option value={30}>Every 30 sec</option>
-                <option value={60}>Every 1 min</option>
-                <option value={300}>Every 5 min</option>
-                <option value={600}>Every 10 min</option>
-                <option value={0}>Disabled (Manual)</option>
-              </select>
-            </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
 
-            {oauthAuthorized ? (
-              <div 
-                style={{ 
-                  display: "inline-flex", 
-                  alignItems: "center", 
-                  gap: "0.35rem", 
-                  padding: "0.4rem 0.75rem", 
-                  fontSize: "0.8rem", 
-                  height: "32px", 
-                  background: "#d4edda", 
-                  border: "1px solid #c3e6cb", 
-                  borderRadius: "4px", 
-                  color: "#000000", 
-                  fontWeight: "600" 
-                }}
-              >
-                <CheckCircle size={14} style={{ color: "#155724" }} />
-                <span>✓ Google Calendar Active</span>
-              </div>
-            ) : oauthConfigured ? (
-              <button 
-                className="btn"
-                style={{ 
-                  display: "inline-flex", 
-                  alignItems: "center", 
-                  gap: "0.35rem", 
-                  padding: "0.4rem 0.75rem", 
-                  fontSize: "0.8rem", 
-                  height: "32px", 
-                  background: "#fff3cd", 
-                  border: "1px solid #ffeeba", 
-                  color: "#000000", 
-                  fontWeight: "600", 
-                  cursor: "pointer", 
-                  borderRadius: "4px" 
-                }}
-                onClick={handleAuthorizeCalendar}
-              >
-                <Calendar size={14} style={{ color: "#856404" }} />
-                <span>Authorize Google Calendar</span>
-              </button>
-            ) : (
-              <div 
-                style={{ 
-                  display: "inline-flex", 
-                  alignItems: "center", 
-                  gap: "0.35rem", 
-                  padding: "0.4rem 0.75rem", 
-                  fontSize: "0.8rem", 
-                  height: "32px", 
-                  background: "#f8d7da", 
-                  border: "1px solid #f5c6cb", 
-                  borderRadius: "4px", 
-                  color: "#000000", 
-                  fontWeight: "600" 
-                }}
-                title="Populate GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in backend/.env"
-              >
-                <AlertCircle size={14} style={{ color: "#721c24" }} />
-                <span>Google OAuth Not Configured (.env)</span>
-              </div>
-            )}
-
-            <button 
-              className="btn btn-primary"
-              style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem", padding: "0.4rem 0.75rem", fontSize: "0.8rem", height: "32px" }}
-              onClick={handleCheckReplies}
-              disabled={checkingReplies}
-            >
-              <RefreshCcw size={14} className={checkingReplies ? "spin" : ""} />
-              <span>{checkingReplies ? "Scanning Inbox..." : "Check Live Replies"}</span>
-            </button>
-            <button 
-              className="btn btn-secondary" 
-              style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem", padding: "0.4rem 0.75rem", fontSize: "0.8rem", height: "32px" }}
-              onClick={handleReset}
-              disabled={resetting}
-            >
-              <RefreshCcw size={14} className={resetting ? "spin" : ""} />
-              <span>Reset Campaigns</span>
-            </button>
-            <button 
-              className="btn btn-secondary" 
+      {/* Target Type Toggle */}
+      {!defaultTargetType && (
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: "0.5rem" }}>
+          <div style={{ background: "var(--bg-surface)", padding: "4px", borderRadius: "10px", border: "1px solid var(--border-color)", display: "inline-flex", gap: "4px" }}>
+            <button
+              className={`btn ${targetType === "incubators" ? "btn-primary" : ""}`}
+              onClick={() => setTargetType("incubators")}
               style={{ 
-                display: "inline-flex", 
-                alignItems: "center", 
-                gap: "0.35rem", 
-                padding: "0.4rem 0.75rem", 
-                fontSize: "0.8rem", 
-                height: "32px",
-                background: "rgba(139, 92, 246, 0.1)",
-                color: "var(--accent-purple)",
-                border: "1px solid rgba(139, 92, 246, 0.2)"
+                minWidth: "160px", 
+                justifyContent: "center",
+                background: targetType === "incubators" ? "var(--primary)" : "transparent",
+                color: targetType === "incubators" ? "white" : "var(--text-muted)",
+                border: "none",
+                boxShadow: targetType === "incubators" ? "var(--shadow-sm)" : "none",
+                fontWeight: targetType === "incubators" ? "700" : "500",
               }}
-              onClick={handleExportLeadsToCsv}
             >
-              <Download size={14} />
-              <span>Export Leads (CSV)</span>
+              Incubator Campaigns
+            </button>
+            <button
+              className={`btn ${targetType === "startups" ? "btn-primary" : ""}`}
+              onClick={() => setTargetType("startups")}
+              style={{ 
+                minWidth: "160px", 
+                justifyContent: "center",
+                background: targetType === "startups" ? "var(--primary)" : "transparent",
+                color: targetType === "startups" ? "white" : "var(--text-muted)",
+                border: "none",
+                boxShadow: targetType === "startups" ? "var(--shadow-sm)" : "none",
+                fontWeight: targetType === "startups" ? "700" : "500",
+              }}
+            >
+              Startup Campaigns
             </button>
           </div>
         </div>
+      )}
+
+      {/* Sub Tab Bar Navigation */}
+      <div style={{ 
+        display: "flex", 
+        gap: "0.5rem", 
+        borderBottom: "1px solid var(--border-color)", 
+        paddingBottom: "0.75rem", 
+        marginBottom: "0.5rem", 
+        flexWrap: "wrap" 
+      }}>
+        <button 
+          className="btn" 
+          style={{ 
+            background: activeSubTab === "campaigns" ? "var(--primary-light)" : "transparent",
+            color: activeSubTab === "campaigns" ? "var(--primary)" : "var(--text-muted)",
+            borderColor: activeSubTab === "campaigns" ? "var(--primary)" : "transparent",
+            fontWeight: activeSubTab === "campaigns" ? "700" : "500",
+            padding: "8px 16px",
+            fontSize: "0.85rem",
+            border: "1px solid transparent"
+          }}
+          onClick={() => setActiveSubTab("campaigns")}
+        >
+          <Sparkles size={14} style={{ marginRight: "6px" }} />
+          Outreach Campaigns
+        </button>
+        {targetType === "incubators" && (
+          <button 
+            className="btn" 
+            style={{ 
+              background: activeSubTab === "mou" ? "var(--primary-light)" : "transparent",
+              color: activeSubTab === "mou" ? "var(--primary)" : "var(--text-muted)",
+              borderColor: activeSubTab === "mou" ? "var(--primary)" : "transparent",
+              fontWeight: activeSubTab === "mou" ? "700" : "500",
+              padding: "8px 16px",
+              fontSize: "0.85rem",
+              border: "1px solid transparent"
+            }}
+            onClick={() => setActiveSubTab("mou")}
+          >
+            <PenTool size={14} style={{ marginRight: "6px" }} />
+            MOU Draft Builder
+          </button>
+        )}
+        <button 
+          className="btn" 
+          style={{ 
+            background: activeSubTab === "meetings" ? "var(--primary-light)" : "transparent",
+            color: activeSubTab === "meetings" ? "var(--primary)" : "var(--text-muted)",
+            borderColor: activeSubTab === "meetings" ? "var(--primary)" : "transparent",
+            fontWeight: activeSubTab === "meetings" ? "700" : "500",
+            padding: "8px 16px",
+            fontSize: "0.85rem",
+            border: "1px solid transparent"
+          }}
+          onClick={() => setActiveSubTab("meetings")}
+        >
+          <Calendar size={14} style={{ marginRight: "6px" }} />
+          Scheduled Meetings ({filteredMeetings.length})
+        </button>
+        {targetType === "incubators" && (
+          <button 
+            className="btn" 
+            style={{ 
+              background: activeSubTab === "discover" ? "var(--primary-light)" : "transparent",
+              color: activeSubTab === "discover" ? "var(--primary)" : "var(--text-muted)",
+              borderColor: activeSubTab === "discover" ? "var(--primary)" : "transparent",
+              fontWeight: activeSubTab === "discover" ? "700" : "500",
+              padding: "8px 16px",
+              fontSize: "0.85rem",
+              border: "1px solid transparent"
+            }}
+            onClick={() => setActiveSubTab("discover")}
+          >
+            <Building2 size={14} style={{ marginRight: "6px" }} />
+            Discover Leads
+          </button>
+        )}
       </div>
 
-      {/* integrated collapsible Academic Collab MOU Generator */}
-      <div className="glass-card" style={{ padding: "1.5rem" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <h3 style={{ margin: 0, fontSize: "1.1rem", fontWeight: "700", display: "flex", alignItems: "center", gap: "0.35rem" }}>
-              ✍ Draft & Execute Academic Collaboration MOU
-            </h3>
-            <p style={{ margin: 0, fontSize: "0.8rem", color: "var(--text-dim)" }}>
-              Select an incubator, fill in partner academic institution details, digitally sign, and send the official MOU via email.
-            </p>
-          </div>
-          <button 
-            type="button"
-            className="btn btn-secondary"
-            onClick={() => setShowMouForm(!showMouForm)}
-            style={{ padding: "0.4rem 0.8rem", fontSize: "0.8rem", minWidth: "120px" }}
-          >
-            {showMouForm ? "Hide Form" : "Open MoU Draft"}
-          </button>
-        </div>
+      {activeSubTab === "campaigns" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }} className="animate-in">
+          {/* Campaign Controls Card */}
+          <div className="glass-card" style={{ padding: "1.5rem" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "1rem" }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: "1.1rem", fontWeight: "700" }}>
+                  ⚡ Email Outreach Campaign Management
+                </h3>
+                <p style={{ margin: 0, fontSize: "0.8rem", color: "var(--text-dim)" }}>
+                  Coordinate email outreach invites, check live inbox replies, and monitor automated follow-up calendar schedules.
+                </p>
+              </div>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.35rem", marginRight: "0.5rem" }}>
+                  <span style={{ fontSize: "0.8rem", color: "#000000", whiteSpace: "nowrap", fontWeight: "600" }}>Auto Scan:</span>
+                  <select 
+                    className="form-input" 
+                    style={{ padding: "0.25rem 0.5rem", fontSize: "0.8rem", width: "130px", height: "32px", color: "black", background: "#f8fafc", border: "1px solid var(--border-color)", borderRadius: "4px", margin: 0 }}
+                    value={syncInterval}
+                    onChange={(e) => handleIntervalChange(parseInt(e.target.value))}
+                  >
+                    <option value={30}>Every 30 sec</option>
+                    <option value={60}>Every 1 min</option>
+                    <option value={300}>Every 5 min</option>
+                    <option value={600}>Every 10 min</option>
+                    <option value={0}>Disabled (Manual)</option>
+                  </select>
+                </div>
 
-        {showMouForm && (
-          <form onSubmit={handleSendMou} className="animate-in" style={{ marginTop: "1.5rem", borderTop: "1px solid var(--border-color)", paddingTop: "1.5rem" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.35rem", marginRight: "0.5rem" }}>
+                  <span style={{ fontSize: "0.8rem", color: "#000000", whiteSpace: "nowrap", fontWeight: "600" }}>Follow-up Delay:</span>
+                  <select 
+                    className="form-input" 
+                    style={{ padding: "0.25rem 0.5rem", fontSize: "0.8rem", width: "130px", height: "32px", color: "black", background: "#f8fafc", border: "1px solid var(--border-color)", borderRadius: "4px", margin: 0 }}
+                    value={followupDelay}
+                    onChange={(e) => handleFollowupDelayChange(parseInt(e.target.value))}
+                  >
+                    <option value={30}>30 sec (Test)</option>
+                    <option value={60}>1 min (Test)</option>
+                    <option value={120}>2 min (Test)</option>
+                    <option value={300}>5 min</option>
+                    <option value={86400 * 3}>3 Days</option>
+                    <option value={86400 * 7}>7 Days</option>
+                  </select>
+                </div>
+
+                <button 
+                  className="btn btn-primary"
+                  style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem", padding: "0.4rem 0.75rem", fontSize: "0.8rem", height: "32px" }}
+                  onClick={handleCheckReplies}
+                  disabled={checkingReplies}
+                >
+                  <RefreshCcw size={14} className={checkingReplies ? "spin" : ""} />
+                  <span>{checkingReplies ? "Scanning Inbox..." : "Check Live Replies"}</span>
+                </button>
+
+                <button 
+                  className="btn btn-primary"
+                  style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem", padding: "0.4rem 0.75rem", fontSize: "0.8rem", height: "32px", background: "rgba(139, 92, 246, 0.9)", border: "1px solid rgb(139, 92, 246)" }}
+                  onClick={handleTriggerFollowups}
+                  disabled={checkingFollowups}
+                >
+                  <Send size={14} className={checkingFollowups ? "spin" : ""} />
+                  <span>{checkingFollowups ? "Sending Followups..." : "Trigger Followups"}</span>
+                </button>
+                <button 
+                  className="btn btn-secondary" 
+                  style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem", padding: "0.4rem 0.75rem", fontSize: "0.8rem", height: "32px" }}
+                  onClick={handleReset}
+                  disabled={resetting}
+                >
+                  <RefreshCcw size={14} className={resetting ? "spin" : ""} />
+                  <span>Reset Campaigns</span>
+                </button>
+                <button 
+                  className="btn btn-secondary" 
+                  style={{ 
+                    display: "inline-flex", 
+                    alignItems: "center", 
+                    gap: "0.35rem", 
+                    padding: "0.4rem 0.75rem", 
+                    fontSize: "0.8rem", 
+                    height: "32px",
+                    background: "rgba(139, 92, 246, 0.1)",
+                    color: "var(--accent-purple)",
+                    border: "1px solid rgba(139, 92, 246, 0.2)"
+                  }}
+                  onClick={handleExportLeadsToCsv}
+                >
+                  <Download size={14} />
+                  <span>Export Leads (CSV)</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Funnel Analytics Widget */}
+          {filteredLeads.length > 0 && (() => {
+            const targetedCount = filteredLeads.length;
+            const sentCount = filteredLeads.filter(l => l.status !== 'Draft').length;
+            const followupCount = filteredLeads.filter(l => l.status === 'Follow-up Sent' || (l.followup_count || 0) > 0).length;
+            const repliedCount = filteredLeads.filter(l => ['Replied', 'Meeting Scheduled', 'Not Interested', 'In Loop', 'Interviewed', 'Incubated'].includes(l.status)).length;
+            const meetingCount = filteredLeads.filter(l => ['Meeting Scheduled', 'Interviewed'].includes(l.status)).length;
+
+            const getPercent = (count, base) => {
+              if (!base) return '0%';
+              return `${Math.round((count / base) * 100)}%`;
+            };
+
+            const funnelStages = [
+              { label: "Targeted Leads", count: targetedCount, pct: "100%", color: "var(--accent-purple)", bg: "rgba(139, 92, 246, 0.05)" },
+              { label: "Outreach Sent", count: sentCount, pct: getPercent(sentCount, targetedCount), color: "var(--secondary)", bg: "rgba(56, 189, 248, 0.05)" },
+              { label: "Follow-up Sent", count: followupCount, pct: getPercent(followupCount, sentCount), color: "var(--accent-amber)", bg: "rgba(245, 158, 11, 0.05)" },
+              { label: "Replies Received", count: repliedCount, pct: getPercent(repliedCount, sentCount), color: "var(--primary)", bg: "rgba(99, 102, 241, 0.05)" },
+              { label: "Meetings Booked", count: meetingCount, pct: getPercent(meetingCount, repliedCount), color: "var(--accent-green)", bg: "rgba(16, 185, 129, 0.05)" },
+            ];
+
+            return (
+              <div className="glass-card animate-in" style={{ padding: "1.5rem" }}>
+                <h3 style={{ margin: "0 0 1rem 0", fontSize: "1.1rem", fontWeight: "700", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  📊 Campaign Conversion Funnel Analytics
+                </h3>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "1rem", alignItems: "stretch" }}>
+                  {funnelStages.map((stage, idx) => (
+                    <div 
+                      key={idx} 
+                      style={{ 
+                        background: stage.bg, 
+                        border: `1px solid ${stage.color}33`, 
+                        borderRadius: "8px", 
+                        padding: "1rem", 
+                        textAlign: "center", 
+                        position: "relative",
+                        display: "flex",
+                        flexDirection: "column",
+                        justifyContent: "space-between",
+                        gap: "0.5rem",
+                        boxShadow: "0 4px 6px -1px rgba(0,0,0,0.05)"
+                      }}
+                    >
+                      <div style={{ fontSize: "0.75rem", fontWeight: "700", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                        {stage.label}
+                      </div>
+                      <div style={{ fontSize: "1.8rem", fontWeight: "800", color: stage.color, margin: "0.25rem 0" }}>
+                        {stage.count}
+                      </div>
+                      <div style={{ fontSize: "0.75rem", fontWeight: "600", color: stage.color, background: `${stage.color}1a`, padding: "2px 8px", borderRadius: "12px", display: "inline-block", alignSelf: "center" }}>
+                        {idx === 0 ? "Base" : `${stage.pct} conv.`}
+                      </div>
+                      {idx < 4 && (
+                        <div 
+                          style={{ 
+                            position: "absolute", 
+                            right: "-0.7rem", 
+                            top: "50%", 
+                            transform: "translateY(-50%)", 
+                            zIndex: 2, 
+                            background: "#ffffff", 
+                            borderRadius: "50%", 
+                            width: "22px", 
+                            height: "22px", 
+                            display: "flex", 
+                            alignItems: "center", 
+                            justifyContent: "center", 
+                            border: "1px solid var(--border-color)",
+                            boxShadow: "0 2px 4px rgba(0,0,0,0.05)"
+                          }}
+                        >
+                          <ChevronRight size={13} style={{ color: "var(--text-dim)" }} />
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Main Grid: Leads List & Console Logs */}
+          <div className="dashboard-grid" style={{ gridTemplateColumns: "1.6fr 1fr", gap: "1.5rem" }}>
             
+            {/* Leads Management Panel */}
+            <div className="glass-card" style={{ padding: "1.5rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
+              <h3 style={{ margin: 0, fontSize: "1.1rem", fontWeight: "700" }}>📋 Targeted Outreach Campaigns</h3>
+              
+              {/* Campaign Search & Filter Controls */}
+              <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.25rem", flexWrap: "wrap" }}>
+                <input 
+                  type="text"
+                  className="form-input"
+                  placeholder="Search leads by name/email..."
+                  value={leadSearchQuery}
+                  onChange={(e) => setLeadSearchQuery(e.target.value)}
+                  style={{ fontSize: "0.8rem", padding: "0.4rem 0.6rem", color: "black", background: "#f8fafc", flex: 1, minWidth: "150px" }}
+                />
+                <select 
+                  className="form-input"
+                  value={leadSelectedStatus}
+                  onChange={(e) => setLeadSelectedStatus(e.target.value)}
+                  style={{ fontSize: "0.8rem", padding: "0.4rem 0.6rem", color: "black", background: "#f8fafc", width: "160px" }}
+                >
+                  <option value="">All Statuses</option>
+                  <option value="Draft">Draft</option>
+                  <option value="Sent">Sent</option>
+                  <option value="Follow-up Sent">Follow-up Sent</option>
+                  <option value="Replied">Replied</option>
+                  <option value="Meeting Scheduled">Meeting Scheduled</option>
+                  <option value="Not Interested">Not Interested</option>
+                </select>
+              </div>
+
+              {loading ? (
+                <p style={{ color: "var(--text-dim)", fontSize: "0.9rem" }}>Loading outreach campaigns...</p>
+              ) : (
+                <div style={{ overflowX: "auto" }}>
+                  <table className="data-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem", textAlign: "left" }}>
+                    <thead>
+                      <tr style={{ borderBottom: "1px solid var(--border-color)", paddingBottom: "0.5rem" }}>
+                        <th style={{ padding: "0.75rem 0.5rem", color: "var(--text-dim)" }}>
+                          {targetType === "startups" ? "Startup" : "Incubator"}
+                        </th>
+                        <th style={{ padding: "0.75rem 0.5rem", color: "var(--text-dim)" }}>Status</th>
+                        <th style={{ padding: "0.75rem 0.5rem", color: "var(--text-dim)", textAlign: "center" }}>Lead Score</th>
+                        <th style={{ padding: "0.75rem 0.5rem", color: "var(--text-dim)", textAlign: "right" }}>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {paginatedLeads.map((lead) => (
+                        <tr key={lead.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.03)", verticalAlign: "middle" }}>
+                          <td style={{ padding: "0.75rem 0.5rem" }}>
+                            <div style={{ fontWeight: "600", color: "#000000" }}>{lead.incubator_name}</div>
+                            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                              <span style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>{lead.email}</span>
+                              {(lead.followup_count || 0) > 0 && (
+                                <span style={{ 
+                                  fontSize: "0.68rem", 
+                                  fontWeight: "700",
+                                  background: "rgba(224, 242, 254, 0.6)", 
+                                  color: "#0369a1", 
+                                  padding: "1px 5px", 
+                                  borderRadius: "3px" 
+                                }}>
+                                  Follow-ups: {lead.followup_count}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td style={{ padding: "0.75rem 0.5rem" }}>
+                            <select
+                              value={lead.status || "Draft"}
+                              onChange={(e) => handleUpdateLeadStatus(lead.id, e.target.value)}
+                              style={{ 
+                                fontSize: "0.72rem", 
+                                padding: "2px 6px", 
+                                borderRadius: "4px",
+                                fontWeight: "700",
+                                border: "1px solid rgba(0,0,0,0.05)",
+                                cursor: "pointer",
+                                outline: "none",
+                                background: 
+                                  lead.status === "Meeting Scheduled" ? "#d1fae5" : 
+                                  lead.status === "Replied" ? "#ede9fe" :            
+                                  lead.status === "Sent" ? "#ecfeff" :               
+                                  lead.status === "Follow-up Sent" ? "#e0f2fe" :
+                                  lead.status === "Not Interested" ? "#fee2e2" :     
+                                  "#f3f4f6",                                         
+                                color: 
+                                  lead.status === "Meeting Scheduled" ? "#065f46" :
+                                  lead.status === "Replied" ? "#5b21b6" :
+                                  lead.status === "Sent" ? "#155e75" :
+                                  lead.status === "Follow-up Sent" ? "#0369a1" :
+                                  lead.status === "Not Interested" ? "#991b1b" :
+                                  "#374151"
+                              }}
+                            >
+                              <option value="Draft">Draft</option>
+                              <option value="Sent">Sent</option>
+                              <option value="Follow-up Sent">Follow-up Sent</option>
+                              <option value="Replied">Replied</option>
+                              <option value="Meeting Scheduled">Meeting Scheduled</option>
+                              <option value="Not Interested">Not Interested</option>
+                            </select>
+                          </td>
+                          <td style={{ padding: "0.75rem 0.5rem", textAlign: "center" }}>
+                            {lead.status === "Draft" || lead.status === "Sent" || lead.status === "Follow-up Sent" ? (
+                              <span style={{ color: "#000000" }}>-</span>
+                            ) : (
+                              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.2rem" }}>
+                                <span style={{ 
+                                  fontWeight: "700", 
+                                  color: "#000000"
+                                }}>
+                                  {lead.lead_score}
+                                </span>
+                                <div style={{ width: "60px", height: "4px", background: "rgba(255,255,255,0.05)", borderRadius: "2px", overflow: "hidden" }}>
+                                  <div style={{ 
+                                    height: "100%", 
+                                    width: `${lead.lead_score}%`,
+                                    background: lead.lead_score >= 80 ? "var(--accent-green)" : lead.lead_score >= 50 ? "var(--accent-amber)" : "var(--accent-red)"
+                                  }} />
+                                </div>
+                              </div>
+                            )}
+                          </td>
+                          <td style={{ padding: "0.75rem 0.5rem", textAlign: "right" }}>
+                            {lead.status === "Draft" && (
+                              <button 
+                                className="btn btn-primary" 
+                                style={{ padding: "0.3rem 0.6rem", fontSize: "0.75rem", display: "inline-flex", alignItems: "center", gap: "0.25rem" }}
+                                onClick={(e) => { e.stopPropagation(); handleSendEmail(lead.id, lead.incubator_name, lead.email); }}
+                              >
+                                <Send size={12} />
+                                <span>Send Invite</span>
+                              </button>
+                            )}
+                            {(lead.status === "Sent" || lead.status === "Follow-up Sent") && (lead.followup_count || 0) < 2 && (
+                              <button 
+                                className="btn btn-primary" 
+                                style={{ 
+                                  padding: "0.3rem 0.6rem", 
+                                  fontSize: "0.75rem", 
+                                  marginRight: "0.35rem",
+                                  background: "#e0f2fe",
+                                  border: "1px solid #0284c7",
+                                  color: "#0369a1",
+                                  fontWeight: "600",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "0.25rem"
+                                }}
+                                onClick={(e) => { e.stopPropagation(); handleSendFollowup(lead.id, lead.incubator_name, lead.email); }}
+                              >
+                                <Send size={12} />
+                                <span>Follow Up</span>
+                              </button>
+                            )}
+                            {lead.status === "Replied" && (
+                              <button 
+                                className="btn btn-primary" 
+                                style={{ 
+                                  padding: "0.3rem 0.6rem", 
+                                  fontSize: "0.75rem", 
+                                  marginRight: "0.35rem",
+                                  background: "#e2f0d9",
+                                  border: "1px solid #385723",
+                                  color: "#000000",
+                                  fontWeight: "600"
+                                }}
+                                onClick={() => {
+                                  setSelectedLeadForMeeting(lead);
+                                  const twoDaysOut = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+                                  setMeetingDate(twoDaysOut);
+                                  setMeetingTime("11:00 AM");
+                                }}
+                              >
+                                Schedule Meet
+                              </button>
+                            )}
+                            {["Sent", "Follow-up Sent", "Replied", "Meeting Scheduled", "Not Interested"].includes(lead.status) && (
+                              <button 
+                                className="btn btn-secondary" 
+                                style={{ padding: "0.3rem 0.6rem", fontSize: "0.75rem" }}
+                                onClick={() => setSelectedLeadForDetail(lead)}
+                              >
+                                View Details
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+
+                  {/* Leads Pagination Controls */}
+                  {filteredLeads.length > leadsItemsPerPage && (
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid var(--border-color)", paddingTop: "0.75rem", marginTop: "1rem" }}>
+                      <span style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>
+                        Showing page <strong style={{ color: "black" }}>{leadsCurrentPage}</strong> of <strong style={{ color: "black" }}>{totalLeadsPages}</strong> ({filteredLeads.length} total campaigns)
+                      </span>
+                      <div style={{ display: "flex", gap: "0.5rem" }}>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          style={{ padding: "0.25rem 0.5rem", fontSize: "0.75rem" }}
+                          onClick={() => setLeadsCurrentPage(prev => Math.max(1, prev - 1))}
+                          disabled={leadsCurrentPage === 1}
+                        >
+                          Previous
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          style={{ padding: "0.25rem 0.5rem", fontSize: "0.75rem" }}
+                          onClick={() => setLeadsCurrentPage(prev => Math.min(totalLeadsPages, prev + 1))}
+                          disabled={leadsCurrentPage === totalLeadsPages}
+                        >
+                          Next
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Live Terminal Column */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+              <div className="glass-card" style={{ padding: "1.25rem", display: "flex", flexDirection: "column", height: "450px", background: "#0b0f19", border: "1px solid var(--border-color)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem", borderBottom: "1px solid rgba(255,255,255,0.05)", paddingBottom: "0.5rem" }}>
+                  <h4 style={{ margin: 0, fontSize: "0.85rem", color: "var(--secondary)", display: "flex", alignItems: "center", gap: "0.35rem", fontWeight: "700" }}>
+                    <span className="dot spin" style={{ width: "8px", height: "8px", background: "var(--secondary)", borderRadius: "50%", display: "inline-block" }} />
+                    <span>Campaign Console Log</span>
+                  </h4>
+                  <span style={{ fontSize: "0.7rem", color: "var(--text-dim)", fontFamily: "monospace" }}>STDOUT_LIVE</span>
+                </div>
+                
+                <div style={{ 
+                  flex: 1, 
+                  overflowY: "auto", 
+                  fontFamily: "monospace", 
+                  fontSize: "0.75rem", 
+                  color: "#38bdf8", 
+                  lineHeight: "1.4",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "0.35rem",
+                  paddingRight: "0.5rem"
+                }}>
+                  {terminalLogs.map((log, idx) => (
+                    <div key={idx} style={{ display: "flex", gap: "0.5rem" }}>
+                      <span style={{ color: "var(--text-dim)", flexShrink: 0 }}>[{log.time}]</span>
+                      <span style={{ 
+                        color: 
+                          log.src === "SYSTEM" ? "var(--accent-amber)" : 
+                          log.src === "OUTREACH" ? "var(--secondary)" :
+                          log.src === "AI_ENGINE" ? "#ec4899" :
+                          log.src === "CALENDAR" ? "var(--accent-green)" :
+                          "var(--accent-red)",
+                        fontWeight: "600",
+                        flexShrink: 0
+                      }}>
+                        {log.src}:
+                      </span>
+                      <span style={{ color: "#f8fafc", wordBreak: "break-all" }}>{log.msg}</span>
+                    </div>
+                  ))}
+                  <div ref={terminalEndRef} />
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {activeSubTab === "mou" && (
+        <div className="glass-card animate-in" style={{ padding: "1.5rem" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border-color)", paddingBottom: "1rem", marginBottom: "1rem" }}>
+            <div>
+              <h3 style={{ margin: 0, fontSize: "1.1rem", fontWeight: "700", display: "flex", alignItems: "center", gap: "0.35rem" }}>
+                ✍ Draft & Execute Academic Collaboration MOU
+              </h3>
+              <p style={{ margin: 0, fontSize: "0.8rem", color: "var(--text-dim)" }}>
+                Select an incubator, fill in partner academic institution details, digitally sign, and send the official MOU via email.
+              </p>
+            </div>
+          </div>
+
+          <form onSubmit={handleSendMou} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
             {/* Search & Select First Party Panel */}
-            <div className="form-group" style={{ background: "rgba(255, 255, 255, 0.02)", padding: "1rem", borderRadius: "8px", border: "1px solid var(--border-color)", marginBottom: "1.5rem" }}>
+            <div className="form-group" style={{ background: "rgba(255, 255, 255, 0.02)", padding: "1rem", borderRadius: "8px", border: "1px solid var(--border-color)", marginBottom: "0.5rem" }}>
               <label style={{ fontWeight: "700", marginBottom: "0.75rem", display: "block", color: "#000000" }}>
                 🔍 Search & Select First Party (Incubator)
               </label>
               
-              {/* Filter Inputs Grid */}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "0.5rem", marginBottom: "0.75rem" }}>
                 <input 
                   type="text" 
@@ -1065,112 +1645,85 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                   <option value="">All States</option>
                   {statesList.map(s => <option key={s} value={s}>{s}</option>)}
                 </select>
-                <select 
-                  className="form-input" 
-                  value={incSelectedCity} 
-                  onChange={(e) => setIncSelectedCity(e.target.value)}
-                  style={{ fontSize: "0.8rem", padding: "0.4rem 0.6rem", color: "black", background: "#f8fafc" }}
-                >
-                  <option value="">All Cities</option>
-                  {citiesList.map(c => <option key={c} value={c}>{c}</option>)}
-                </select>
-                <select 
-                  className="form-input" 
-                  value={incSelectedSector} 
-                  onChange={(e) => setIncSelectedSector(e.target.value)}
-                  style={{ fontSize: "0.8rem", padding: "0.4rem 0.6rem", color: "black", background: "#f8fafc" }}
-                >
-                  <option value="">All Sectors</option>
-                  {sectorsList.map(sec => <option key={sec} value={sec}>{sec}</option>)}
-                </select>
               </div>
 
-              {/* Selection Dropdown */}
-              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+              <div className="form-group" style={{ margin: 0 }}>
                 <select 
-                  className="form-input"
-                  value={selectedIncId}
-                  onChange={(e) => setSelectedIncId(e.target.value)}
+                  className="form-input" 
+                  value={selectedIncId} 
+                  onChange={(e) => {
+                    const incId = e.target.value;
+                    setSelectedIncId(incId);
+                    const inc = incubators.find(i => i.id === incId);
+                    if (inc) {
+                      setIncubatorRep(`Director, ${inc.name}`);
+                    }
+                  }}
+                  style={{ fontSize: "0.8rem", padding: "0.45rem", fontWeight: 700, color: "var(--text-primary)", background: "var(--primary-light)", borderColor: "var(--primary)" }}
                   required
-                  style={{ flex: 1, color: "black", background: "#f8fafc" }}
                 >
-                  <option value="">-- Select matching incubator ({filteredIncubators.length} found) --</option>
+                  <option value="">-- Choose Party A (Incubator) --</option>
                   {filteredIncubators.map(inc => (
                     <option key={inc.id} value={inc.id}>{inc.name} ({inc.city ? `${inc.city}, ` : ""}{inc.state})</option>
                   ))}
                 </select>
-                {(incSearchQuery || incSelectedRegion || incSelectedState || incSelectedCity || incSelectedSector) && (
-                  <button 
-                    type="button" 
-                    className="btn btn-secondary" 
-                    style={{ padding: "0.4rem 0.75rem", fontSize: "0.8rem" }}
-                    onClick={() => {
-                      setIncSearchQuery("");
-                      setIncSelectedRegion("");
-                      setIncSelectedState("");
-                      setIncSelectedCity("");
-                      setIncSelectedSector("");
-                    }}
-                  >
-                    Clear filters
-                  </button>
-                )}
               </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1rem" }}>
+            {/* Second Party Form Fields */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
               <div className="form-group">
-                <label>First Party Representative Signature Title</label>
+                <label>Party B Institution Name</label>
                 <input 
                   type="text" 
                   className="form-input" 
-                  value={incubatorRep}
-                  onChange={(e) => setIncubatorRep(e.target.value)}
-                  placeholder="e.g. Director / Head of Incubation"
-                  required
-                />
-              </div>
-              <div className="form-group">
-                <label>Second Party (Partner Academic/Research Institution Name)</label>
-                <input 
-                  type="text" 
-                  className="form-input" 
-                  value={partyBName} 
+                  placeholder="e.g. Nagpur University Technology Cell" 
+                  value={partyBName}
                   onChange={(e) => setPartyBName(e.target.value)}
-                  placeholder="e.g. Nagpur Science Research Institute"
-                  required
-                />
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1rem" }}>
-              <div className="form-group">
-                <label>Second Party Representative Name</label>
-                <input 
-                  type="text" 
-                  className="form-input" 
-                  value={partyBRep} 
-                  onChange={(e) => setPartyBRep(e.target.value)}
-                  placeholder="e.g. Dr. Rajesh Sharma"
                   required
                 />
               </div>
               <div className="form-group">
-                <label>Second Party Contact Email (Receives MOU)</label>
+                <label>Party B Contact Email</label>
                 <input 
                   type="email" 
                   className="form-input" 
-                  value={partyBEmail} 
+                  placeholder="e.g. contact@nu-tech.edu.in" 
+                  value={partyBEmail}
                   onChange={(e) => setPartyBEmail(e.target.value)}
-                  placeholder="e.g. kadurugved0@gmail.com"
                   required
                 />
               </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1.5rem" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
               <div className="form-group">
-                <label>MoU Execution Date</label>
+                <label>Party B Representative</label>
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  placeholder="e.g. Dean of R&D" 
+                  value={partyBRep}
+                  onChange={(e) => setPartyBRep(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label>Party A Representative (You)</label>
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  placeholder="e.g. Director, Nagpur Incubation Cell" 
+                  value={incubatorRep}
+                  onChange={(e) => setIncubatorRep(e.target.value)}
+                  required
+                />
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.5fr", gap: "1rem" }}>
+              <div className="form-group">
+                <label>Execution Date</label>
                 <input 
                   type="date" 
                   className="form-input" 
@@ -1180,69 +1733,62 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                 />
               </div>
               <div className="form-group">
-                <label>MoU Valid Duration</label>
-                <select 
-                  className="form-input" 
-                  value={duration} 
-                  onChange={(e) => setDuration(e.target.value)}
-                >
+                <label>Validity Period</label>
+                <select className="form-input" value={duration} onChange={(e) => setDuration(e.target.value)}>
                   <option value="1 Year">1 Year</option>
                   <option value="2 Years">2 Years</option>
                   <option value="3 Years">3 Years</option>
                   <option value="5 Years">5 Years</option>
                 </select>
               </div>
-            </div>
-
-            <div className="form-group" style={{ marginBottom: "1.5rem" }}>
-              <label>Collaboration Sectors / Focus Areas</label>
-              <input 
-                type="text" 
-                className="form-input" 
-                value={targetSectors}
-                onChange={(e) => setTargetSectors(e.target.value)}
-                placeholder="e.g. Biotechnology, Nanotechnology, AI Research"
-              />
-            </div>
-
-            <div className="form-group" style={{ marginBottom: "1.5rem" }}>
-              <label>Draw Digital Signature (First Party Signature)</label>
-              <div className="sig-pad-container">
-                <div className="sig-pad-header">
-                  <span style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>Draw signature inside the box below</span>
-                  {signatureData && <span style={{ fontSize: "0.75rem", color: "var(--accent-green)", fontWeight: 700 }}>✓ Signature Adopted</span>}
-                </div>
-                <canvas 
-                  ref={canvasRef}
-                  className="sig-canvas"
-                  width={450}
-                  height={150}
-                  onMouseDown={startDrawing}
-                  onMouseMove={draw}
-                  onMouseUp={stopDrawing}
-                  onMouseLeave={stopDrawing}
-                  onTouchStart={startDrawing}
-                  onTouchMove={draw}
-                  onTouchEnd={stopDrawing}
-                  style={{ background: "#f8fafc", border: "1px solid var(--border-color)", borderRadius: "6px", width: "100%", height: "150px" }}
+              <div className="form-group">
+                <label>Collaboration Sectors</label>
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  value={targetSectors}
+                  onChange={(e) => setTargetSectors(e.target.value)}
+                  required
                 />
-                <div className="sig-pad-footer" style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
-                  <button type="button" className="btn btn-secondary" style={{ padding: "0.35rem 0.75rem", fontSize: "0.8rem" }} onClick={clearSignature}>
-                    <Trash2 size={12} /> Clear
-                  </button>
-                  <label className="btn btn-secondary" style={{ padding: "0.35rem 0.75rem", fontSize: "0.8rem", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: "0.25rem", margin: 0 }}>
-                    <Upload size={12} /> Upload Image
-                    <input 
-                      type="file" 
-                      accept="image/*" 
-                      style={{ display: "none" }} 
-                      onChange={handleSignatureUpload} 
-                    />
-                  </label>
-                  <button type="button" className="btn btn-primary" style={{ padding: "0.35rem 0.75rem", fontSize: "0.8rem", marginLeft: "auto" }} onClick={adoptSignature}>
-                    Adopt Signature
-                  </button>
-                </div>
+              </div>
+            </div>
+
+            {/* Signature Pad container */}
+            <div className="form-group">
+              <label style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span>✍ Party A Representative Signature (Draw or Upload)</span>
+                {signatureData && <span style={{ fontSize: "0.75rem", color: "var(--accent-green)", fontWeight: 700 }}>✓ Signature Adopted</span>}
+              </label>
+              <canvas 
+                ref={canvasRef}
+                className="sig-canvas"
+                width={450}
+                height={150}
+                onMouseDown={startDrawing}
+                onMouseMove={draw}
+                onMouseUp={stopDrawing}
+                onMouseLeave={stopDrawing}
+                onTouchStart={startDrawing}
+                onTouchMove={draw}
+                onTouchEnd={stopDrawing}
+                style={{ background: "#f8fafc", border: "1px solid var(--border-color)", borderRadius: "6px", width: "100%", height: "150px" }}
+              />
+              <div className="sig-pad-footer" style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
+                <button type="button" className="btn btn-secondary" style={{ padding: "0.35rem 0.75rem", fontSize: "0.8rem" }} onClick={clearSignature}>
+                  <Trash2 size={12} /> Clear
+                </button>
+                <label className="btn btn-secondary" style={{ padding: "0.35rem 0.75rem", fontSize: "0.8rem", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: "0.25rem", margin: 0 }}>
+                  <Upload size={12} /> Upload Image
+                  <input 
+                    type="file" 
+                    accept="image/*" 
+                    style={{ display: "none" }} 
+                    onChange={handleSignatureUpload} 
+                  />
+                </label>
+                <button type="button" className="btn btn-primary" style={{ padding: "0.35rem 0.75rem", fontSize: "0.8rem", marginLeft: "auto" }} onClick={adoptSignature}>
+                  Adopt Signature
+                </button>
               </div>
             </div>
 
@@ -1266,452 +1812,32 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
               {sendingMou ? "Transmitting executed agreement..." : "Adopt Signature & Transmit MOU via SMTP"}
             </button>
           </form>
-        )}
-      </div>
-
-      {/* Directory Lead Finder Card */}
-      <div className="glass-card" style={{ padding: "1.5rem" }}>
-        <h3 style={{ margin: "0 0 0.5rem 0", fontSize: "1.1rem", fontWeight: "700", display: "flex", alignItems: "center", gap: "0.35rem" }}>
-          🏫 Discover & Add Campaign Leads from Directory
-        </h3>
-        <p style={{ margin: "0 0 1.25rem 0", fontSize: "0.8rem", color: "var(--text-dim)" }}>
-          Search through all academic, government, and private incubators. Filter by confidence score rating stars and add them to your targeted campaigns list.
-        </p>
-
-        {/* Filters Panel */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "0.5rem", marginBottom: "1rem", background: "rgba(255, 255, 255, 0.01)", padding: "0.75rem", borderRadius: "6px", border: "1px solid var(--border-color)" }}>
-          <input 
-            type="text"
-            className="form-input"
-            placeholder="Search by name, description..."
-            value={dirSearchQuery}
-            onChange={(e) => setDirSearchQuery(e.target.value)}
-            style={{ fontSize: "0.8rem", padding: "0.4rem 0.6rem", color: "black", background: "#f8fafc" }}
-          />
-          <select 
-            className="form-input"
-            value={dirSelectedRegion}
-            onChange={(e) => setDirSelectedRegion(e.target.value)}
-            style={{ fontSize: "0.8rem", padding: "0.4rem 0.6rem", color: "black", background: "#f8fafc" }}
-          >
-            <option value="">All Regions</option>
-            {regionsList.map(r => <option key={r} value={r}>{r}</option>)}
-          </select>
-          <select 
-            className="form-input"
-            value={dirSelectedState}
-            onChange={(e) => setDirSelectedState(e.target.value)}
-            style={{ fontSize: "0.8rem", padding: "0.4rem 0.6rem", color: "black", background: "#f8fafc" }}
-          >
-            <option value="">All States</option>
-            {statesList.map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <select 
-            className="form-input"
-            value={dirSelectedSector}
-            onChange={(e) => setDirSelectedSector(e.target.value)}
-            style={{ fontSize: "0.8rem", padding: "0.4rem 0.6rem", color: "black", background: "#f8fafc" }}
-          >
-            <option value="">All Sectors</option>
-            {sectorsList.map(sec => <option key={sec} value={sec}>{sec}</option>)}
-          </select>
-          <select 
-            className="form-input"
-            value={dirMinStars}
-            onChange={(e) => setDirMinStars(parseInt(e.target.value))}
-            style={{ fontSize: "0.8rem", padding: "0.4rem 0.6rem", color: "black", background: "#f8fafc" }}
-          >
-            <option value={0}>Any Star Rating</option>
-            <option value={5}>⭐⭐⭐⭐⭐ (5 Stars)</option>
-            <option value={4}>⭐⭐⭐⭐ & above (4+ Stars)</option>
-            <option value={3}>⭐⭐⭐ & above (3+ Stars)</option>
-            <option value={2}>⭐⭐ & above (2+ Stars)</option>
-            <option value={1}>⭐ & above (1+ Star)</option>
-          </select>
         </div>
+      )}
 
-        {/* Table List of Incubators (5 per page) */}
-        {paginatedDirIncubators.length === 0 ? (
-          <div style={{ padding: "1.5rem 1rem", textAlign: "center", border: "1px dashed var(--border-color)", borderRadius: "6px", color: "var(--text-dim)", fontSize: "0.85rem" }}>
-            No matching incubators found. Try adjusting your search query or filters.
-          </div>
-        ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table className="data-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem", textAlign: "left", marginBottom: "1rem" }}>
-              <thead>
-                <tr style={{ borderBottom: "1px solid var(--border-color)", paddingBottom: "0.5rem" }}>
-                  <th style={{ padding: "0.5rem", color: "var(--text-dim)" }}>Incubator</th>
-                  <th style={{ padding: "0.5rem", color: "var(--text-dim)" }}>Region & State</th>
-                  <th style={{ padding: "0.5rem", color: "var(--text-dim)", textAlign: "center" }}>Confidence Star</th>
-                  <th style={{ padding: "0.5rem", color: "var(--text-dim)", textAlign: "right" }}>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {paginatedDirIncubators.map(inc => {
-                  const isAlreadyLead = leads.some(lead => lead.incubator_id === inc.id);
-                  return (
-                    <tr key={inc.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.03)", verticalAlign: "middle" }}>
-                      <td style={{ padding: "0.6rem 0.5rem" }}>
-                        <div style={{ fontWeight: "600", color: "#000000" }}>{inc.name}</div>
-                        <div style={{ fontSize: "0.75rem", color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "300px" }}>
-                          {inc.description || "No description provided."}
-                        </div>
-                      </td>
-                      <td style={{ padding: "0.6rem 0.5rem" }}>
-                        <div style={{ fontWeight: "500", color: "#000000" }}>{inc.region || "Unknown"}</div>
-                        <div style={{ fontSize: "0.75rem", color: "#000000" }}>{inc.city ? `${inc.city}, ` : ""}{inc.state}</div>
-                      </td>
-                      <td style={{ padding: "0.6rem 0.5rem", textAlign: "center", fontSize: "0.85rem" }}>
-                        <span title={`Confidence score: ${(inc.confidence_score || 1.0).toFixed(2)}`}>
-                          {"⭐".repeat(getStarsCount(inc.confidence_score))}
-                        </span>
-                      </td>
-                      <td style={{ padding: "0.6rem 0.5rem", textAlign: "right" }}>
-                        {isAlreadyLead ? (
-                          <span style={{ fontSize: "0.75rem", color: "var(--accent-green)", fontWeight: "600", paddingRight: "0.5rem" }}>
-                            ✓ In Campaigns
-                          </span>
-                        ) : (
-                          <button
-                            type="button"
-                            className="btn btn-primary"
-                            style={{ padding: "0.3rem 0.6rem", fontSize: "0.75rem" }}
-                            onClick={() => handleAddLead(inc)}
-                            disabled={addingLeadId === inc.id}
-                          >
-                            {addingLeadId === inc.id ? "Adding..." : "Add to Campaign"}
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-
-            {/* Pagination Controls */}
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid var(--border-color)", paddingTop: "0.75rem" }}>
-              <span style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>
-                Showing page <strong style={{ color: "black" }}>{dirCurrentPage}</strong> of <strong style={{ color: "black" }}>{totalPages}</strong> ({filteredDirIncubators.length} total incubators matched)
-              </span>
-              <div style={{ display: "flex", gap: "0.5rem" }}>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  style={{ padding: "0.25rem 0.5rem", fontSize: "0.75rem" }}
-                  onClick={() => setDirCurrentPage(prev => Math.max(1, prev - 1))}
-                  disabled={dirCurrentPage === 1}
-                >
-                  Previous
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  style={{ padding: "0.25rem 0.5rem", fontSize: "0.75rem" }}
-                  onClick={() => setDirCurrentPage(prev => Math.min(totalPages, prev + 1))}
-                  disabled={dirCurrentPage === totalPages}
-                >
-                  Next
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Metrics Row */}
-      <div className="metrics-grid">
-        <div className="glass-card metric-card">
-          <div className="metric-header">
-            <span className="metric-title">Campaign Leads</span>
-            <span className="metric-icon"><Mail size={18} /></span>
-          </div>
-          <div className="metric-value" style={{ color: "#000000" }}>{leads.length}</div>
-          <div className="metric-footer">Total targeted outreach partners</div>
-        </div>
-
-        <div className="glass-card metric-card">
-          <div className="metric-header">
-            <span className="metric-title">Outreach Dispatched</span>
-            <span className="metric-icon"><Send size={18} style={{ color: "var(--secondary)" }} /></span>
-          </div>
-          <div className="metric-value" style={{ color: "#000000" }}>{totalSent}</div>
-          <div className="metric-footer">Outreach invitations sent</div>
-        </div>
-
-        <div className="glass-card metric-card">
-          <div className="metric-header">
-            <span className="metric-title">Replies Scanned</span>
-            <span className="metric-icon"><MessageSquare size={18} style={{ color: "var(--primary)" }} /></span>
-          </div>
-          <div className="metric-value" style={{ color: "#000000" }}>{totalReplies}</div>
-          <div className="metric-footer">Inbox responses classified</div>
-        </div>
-
-        <div className="glass-card metric-card">
-          <div className="metric-header">
-            <span className="metric-title">Auto-Scheduled</span>
-            <span className="metric-icon"><Calendar size={18} style={{ color: "var(--accent-green)" }} /></span>
-          </div>
-          <div className="metric-value" style={{ color: "#000000" }}>{totalMeetings}</div>
-          <div className="metric-footer">Meetings synced to Calendar</div>
-        </div>
-      </div>
-
-      {/* Main Grid: Leads List & Console Logs */}
-      <div className="dashboard-grid" style={{ gridTemplateColumns: "1.6fr 1fr", gap: "1.5rem" }}>
-        
-        {/* Leads Management Panel */}
-        <div className="glass-card" style={{ padding: "1.5rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
-          <h3 style={{ margin: 0, fontSize: "1.1rem", fontWeight: "700" }}>📋 Targeted Outreach Campaigns</h3>
-          
-          {/* Campaign Search & Filter Controls */}
-          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.25rem", flexWrap: "wrap" }}>
-            <input 
-              type="text"
-              className="form-input"
-              placeholder="Search leads by name/email..."
-              value={leadSearchQuery}
-              onChange={(e) => setLeadSearchQuery(e.target.value)}
-              style={{ fontSize: "0.8rem", padding: "0.4rem 0.6rem", color: "black", background: "#f8fafc", flex: 1, minWidth: "150px" }}
-            />
-            <select 
-              className="form-input"
-              value={leadSelectedStatus}
-              onChange={(e) => setLeadSelectedStatus(e.target.value)}
-              style={{ fontSize: "0.8rem", padding: "0.4rem 0.6rem", color: "black", background: "#f8fafc", width: "160px" }}
-            >
-              <option value="">All Statuses</option>
-              <option value="Draft">Draft</option>
-              <option value="Sent">Sent</option>
-              <option value="Replied">Replied</option>
-              <option value="Meeting Scheduled">Meeting Scheduled</option>
-              <option value="Not Interested">Not Interested</option>
-            </select>
-          </div>
-
-          {loading ? (
-            <p style={{ color: "var(--text-dim)", fontSize: "0.9rem" }}>Loading outreach campaigns...</p>
-          ) : (
-            <div style={{ overflowX: "auto" }}>
-              <table className="data-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem", textAlign: "left" }}>
-                <thead>
-                  <tr style={{ borderBottom: "1px solid var(--border-color)", paddingBottom: "0.5rem" }}>
-                    <th style={{ padding: "0.75rem 0.5rem", color: "var(--text-dim)" }}>Incubator</th>
-                    <th style={{ padding: "0.75rem 0.5rem", color: "var(--text-dim)" }}>Status</th>
-                    <th style={{ padding: "0.75rem 0.5rem", color: "var(--text-dim)", textAlign: "center" }}>Lead Score</th>
-                    <th style={{ padding: "0.75rem 0.5rem", color: "var(--text-dim)", textAlign: "right" }}>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {paginatedLeads.map((lead) => (
-                    <tr key={lead.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.03)", verticalAlign: "middle" }}>
-                      <td style={{ padding: "0.75rem 0.5rem" }}>
-                        <div style={{ fontWeight: "600", color: "#000000" }}>{lead.incubator_name}</div>
-                        <div style={{ fontSize: "0.75rem", color: "#000000" }}>{lead.email}</div>
-                      </td>
-                      <td style={{ padding: "0.75rem 0.5rem" }}>
-                        <select
-                          value={lead.status}
-                          onChange={(e) => handleUpdateLeadStatus(lead.id, e.target.value)}
-                          style={{ 
-                            fontSize: "0.72rem", 
-                            padding: "2px 6px", 
-                            borderRadius: "4px",
-                            fontWeight: "700",
-                            border: "1px solid rgba(0,0,0,0.05)",
-                            cursor: "pointer",
-                            outline: "none",
-                            background: 
-                              lead.status === "Meeting Scheduled" ? "#d1fae5" : 
-                              lead.status === "Replied" ? "#ede9fe" :            
-                              lead.status === "Sent" ? "#ecfeff" :               
-                              lead.status === "Not Interested" ? "#fee2e2" :     
-                              "#f3f4f6",                                         
-                            color: 
-                              lead.status === "Meeting Scheduled" ? "#065f46" :
-                              lead.status === "Replied" ? "#5b21b6" :
-                              lead.status === "Sent" ? "#155e75" :
-                              lead.status === "Not Interested" ? "#991b1b" :
-                              "#374151"
-                          }}
-                        >
-                          <option value="Draft">Draft</option>
-                          <option value="Sent">Sent</option>
-                          <option value="Replied">Replied</option>
-                          <option value="Meeting Scheduled">Meeting Scheduled</option>
-                          <option value="Not Interested">Not Interested</option>
-                        </select>
-                      </td>
-                      <td style={{ padding: "0.75rem 0.5rem", textAlign: "center" }}>
-                        {lead.status === "Draft" || lead.status === "Sent" ? (
-                          <span style={{ color: "#000000" }}>-</span>
-                        ) : (
-                          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.2rem" }}>
-                            <span style={{ 
-                              fontWeight: "700", 
-                              color: "#000000"
-                            }}>
-                              {lead.lead_score}
-                            </span>
-                            <div style={{ width: "60px", height: "4px", background: "rgba(255,255,255,0.05)", borderRadius: "2px", overflow: "hidden" }}>
-                              <div style={{ 
-                                height: "100%", 
-                                width: `${lead.lead_score}%`,
-                                background: lead.lead_score >= 80 ? "var(--accent-green)" : lead.lead_score >= 50 ? "var(--accent-amber)" : "var(--accent-red)"
-                              }} />
-                            </div>
-                          </div>
-                        )}
-                      </td>
-                      <td style={{ padding: "0.75rem 0.5rem", textAlign: "right" }}>
-                        {lead.status === "Draft" && (
-                          <button 
-                            className="btn btn-primary" 
-                            style={{ padding: "0.3rem 0.6rem", fontSize: "0.75rem", display: "inline-flex", alignItems: "center", gap: "0.25rem" }}
-                            onClick={() => handleSendEmail(lead.id, lead.incubator_name, lead.email)}
-                          >
-                            <Send size={12} />
-                            <span>Send Invite</span>
-                          </button>
-                        )}
-                        {lead.status === "Replied" && (
-                          <button 
-                            className="btn btn-primary" 
-                            style={{ 
-                              padding: "0.3rem 0.6rem", 
-                              fontSize: "0.75rem", 
-                              marginRight: "0.35rem",
-                              background: "#e2f0d9",
-                              border: "1px solid #385723",
-                              color: "#000000",
-                              fontWeight: "600"
-                            }}
-                            onClick={() => {
-                              setSelectedLeadForMeeting(lead);
-                              const twoDaysOut = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-                              setMeetingDate(twoDaysOut);
-                              setMeetingTime("11:00 AM");
-                            }}
-                          >
-                            Schedule Meet
-                          </button>
-                        )}
-                        {["Sent", "Replied", "Meeting Scheduled", "Not Interested"].includes(lead.status) && (
-                          <button 
-                            className="btn btn-secondary" 
-                            style={{ padding: "0.3rem 0.6rem", fontSize: "0.75rem" }}
-                            onClick={() => setSelectedLeadForDetail(lead)}
-                          >
-                            View Details
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-
-              {/* Leads Pagination Controls */}
-              {filteredLeads.length > leadsItemsPerPage && (
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid var(--border-color)", paddingTop: "0.75rem", marginTop: "1rem" }}>
-                  <span style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>
-                    Showing page <strong style={{ color: "black" }}>{leadsCurrentPage}</strong> of <strong style={{ color: "black" }}>{totalLeadsPages}</strong> ({filteredLeads.length} total campaigns)
-                  </span>
-                  <div style={{ display: "flex", gap: "0.5rem" }}>
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      style={{ padding: "0.25rem 0.5rem", fontSize: "0.75rem" }}
-                      onClick={() => setLeadsCurrentPage(prev => Math.max(1, prev - 1))}
-                      disabled={leadsCurrentPage === 1}
-                    >
-                      Previous
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      style={{ padding: "0.25rem 0.5rem", fontSize: "0.75rem" }}
-                      onClick={() => setLeadsCurrentPage(prev => Math.min(totalLeadsPages, prev + 1))}
-                      disabled={leadsCurrentPage === totalLeadsPages}
-                    >
-                      Next
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Live Terminal & Calendar Column */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
-          
-          {/* Console Log Terminal */}
-          <div className="glass-card" style={{ padding: "1.25rem", display: "flex", flexDirection: "column", height: "300px", background: "#0b0f19", border: "1px solid var(--border-color)" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem", borderBottom: "1px solid rgba(255,255,255,0.05)", paddingBottom: "0.5rem" }}>
-              <h4 style={{ margin: 0, fontSize: "0.85rem", color: "var(--secondary)", display: "flex", alignItems: "center", gap: "0.35rem", fontWeight: "700" }}>
-                <span className="dot spin" style={{ width: "8px", height: "8px", background: "var(--secondary)", borderRadius: "50%", display: "inline-block" }} />
-                <span>Campaign Console Log</span>
-              </h4>
-              <span style={{ fontSize: "0.7rem", color: "var(--text-dim)", fontFamily: "monospace" }}>STDOUT_LIVE</span>
+      {activeSubTab === "meetings" && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: "1.5rem" }} className="animate-in">
+          {/* Left Column: Scheduled Meetings */}
+          <div className="glass-card" style={{ padding: "1.5rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h3 style={{ margin: 0, fontSize: "1.1rem", fontWeight: "700" }}>📅 Scheduled Collaboration Meetings</h3>
             </div>
             
-            <div style={{ 
-              flex: 1, 
-              overflowY: "auto", 
-              fontFamily: "monospace", 
-              fontSize: "0.75rem", 
-              color: "#38bdf8", 
-              lineHeight: "1.4",
-              display: "flex",
-              flexDirection: "column",
-              gap: "0.35rem",
-              paddingRight: "0.5rem"
-            }}>
-              {terminalLogs.map((log, idx) => (
-                <div key={idx} style={{ display: "flex", gap: "0.5rem" }}>
-                  <span style={{ color: "var(--text-dim)", flexShrink: 0 }}>[{log.time}]</span>
-                  <span style={{ 
-                    color: 
-                      log.src === "SYSTEM" ? "var(--accent-amber)" : 
-                      log.src === "OUTREACH" ? "var(--secondary)" :
-                      log.src === "AI_ENGINE" ? "#ec4899" :
-                      log.src === "CALENDAR" ? "var(--accent-green)" :
-                      "var(--accent-red)",
-                    fontWeight: "600",
-                    flexShrink: 0
-                  }}>
-                    {log.src}:
-                  </span>
-                  <span style={{ color: "#f8fafc", wordBreak: "break-all" }}>{log.msg}</span>
-                </div>
-              ))}
-              <div ref={terminalEndRef} />
-            </div>
-          </div>
-
-          {/* Calendar Sync panel */}
-          <div className="glass-card" style={{ padding: "1.25rem", display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-            <h4 style={{ margin: 0, fontSize: "0.95rem", fontWeight: "700", display: "flex", alignItems: "center", gap: "0.35rem" }}>
-              📅 Calendar Meeting Sync
-            </h4>
-            
-            {meetings.length === 0 ? (
+            {filteredMeetings.length === 0 ? (
               <div style={{ 
-                padding: "2rem 1rem", 
+                padding: "3rem 1rem", 
                 textAlign: "center", 
                 border: "1px dashed var(--border-color)", 
                 borderRadius: "6px",
                 color: "var(--text-dim)",
-                fontSize: "0.8rem"
+                fontSize: "0.85rem"
               }}>
-                <Clock size={20} style={{ margin: "0 auto 0.5rem auto", opacity: 0.5 }} />
+                <Clock size={24} style={{ margin: "0 auto 0.5rem auto", opacity: 0.5 }} />
                 <span>No automated meetings scheduled yet. Trigger outreach and reply checking to sync.</span>
               </div>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", maxHeight: "250px", overflowY: "auto" }}>
-                {meetings.map((meeting) => (
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", maxHeight: "400px", overflowY: "auto" }}>
+                {filteredMeetings.map((meeting) => (
                   <div 
                     key={meeting.id} 
                     style={{ 
@@ -1721,106 +1847,67 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                         meeting.status === "Cancelled" ? "rgba(220, 38, 38, 0.05)" : 
                         meeting.status === "Confirmed" ? "rgba(16, 185, 129, 0.08)" : 
                         "rgba(16, 185, 129, 0.04)",
-                      border: 
-                        meeting.status === "Completed" ? "1px solid rgba(71, 85, 105, 0.2)" :
-                        meeting.status === "Cancelled" ? "1px solid rgba(220, 38, 38, 0.2)" :
-                        meeting.status === "Confirmed" ? "1px solid rgba(16, 185, 129, 0.3)" :
-                        "1px solid rgba(16, 185, 129, 0.15)",
-                      borderRadius: "6px" 
+                      border: "1px solid var(--border-color)",
+                      borderRadius: "6px"
                     }}
                   >
-                    <div style={{ fontSize: "0.8rem", fontWeight: "700", color: "#000000" }}>{meeting.title}</div>
-                    <div style={{ display: "flex", gap: "0.5rem", fontSize: "0.75rem", color: "#000000", marginTop: "0.25rem" }}>
-                      <span>📅 {meeting.date}</span>
-                      <span>⏰ {meeting.time}</span>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.25rem" }}>
+                      <strong style={{ fontSize: "0.85rem", color: "var(--text-primary)" }}>{meeting.incubator_name}</strong>
+                      <span style={{ 
+                        fontSize: "0.68rem", 
+                        padding: "1px 5px", 
+                        borderRadius: "3px", 
+                        fontWeight: "700",
+                        background: 
+                          meeting.status === "Completed" ? "#f1f5f9" : 
+                          meeting.status === "Cancelled" ? "#fee2e2" : 
+                          meeting.status === "Confirmed" ? "#d1fae5" : 
+                          "#f3f4f6",
+                        color: 
+                          meeting.status === "Completed" ? "#475569" : 
+                          meeting.status === "Cancelled" ? "#b91c1c" : 
+                          meeting.status === "Confirmed" ? "#065f46" : 
+                          "#374151"
+                      }}>
+                        {meeting.status}
+                      </span>
                     </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "0.5rem", borderTop: "1px solid rgba(0,0,0,0.05)", paddingTop: "0.5rem" }}>
-                      <div style={{ display: "flex", flexDirection: "column", gap: "0.15rem" }}>
-                        <span style={{ fontSize: "0.7rem", color: "var(--accent-green)", fontWeight: "600" }}>✓ Google Meet Generated</span>
-                        <span style={{ 
-                          fontSize: "0.7rem", 
-                          fontWeight: "700",
-                          color: 
-                            meeting.status === "Confirmed" ? "var(--accent-green)" : 
-                            meeting.status === "Completed" ? "var(--primary)" :
-                            meeting.status === "Cancelled" ? "var(--accent-red)" :
-                            "#e28743"
-                        }}>
-                          Status: {meeting.status || "Scheduled"}
-                        </span>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "0.78rem", color: "var(--text-muted)", marginTop: "0.5rem" }}>
+                      <div>
+                        <span>📅 {meeting.date} at 🕒 {meeting.time}</span>
                       </div>
-                      <div style={{ display: "flex", gap: "0.25rem", alignItems: "center" }}>
-                        {(meeting.status === "Scheduled" || !meeting.status) && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => handleUpdateMeetingStatus(meeting.id, "Confirmed")}
-                              style={{
-                                fontSize: "0.7rem",
-                                color: "white",
-                                background: "var(--primary)",
-                                padding: "2px 6px",
-                                borderRadius: "4px",
-                                border: "none",
-                                cursor: "pointer",
-                                fontWeight: "600"
-                              }}
-                            >
-                              Confirm
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleUpdateMeetingStatus(meeting.id, "Cancelled")}
-                              style={{
-                                fontSize: "0.7rem",
-                                color: "white",
-                                background: "var(--accent-red)",
-                                padding: "2px 6px",
-                                borderRadius: "4px",
-                                border: "none",
-                                cursor: "pointer",
-                                fontWeight: "600"
-                              }}
-                            >
-                              Cancel
-                            </button>
-                          </>
+                      <div style={{ display: "flex", gap: "0.35rem" }}>
+                        {meeting.status === "Confirmed" && (
+                          <button 
+                            className="btn" 
+                            style={{ 
+                              fontSize: "0.7rem", 
+                              color: "#b91c1c", 
+                              background: "#fee2e2", 
+                              border: "1px solid #fca5a5", 
+                              padding: "2px 6px",
+                              borderRadius: "4px"
+                            }} 
+                            onClick={() => handleUpdateMeetingStatus(meeting.id, "Cancelled")}
+                          >
+                            Cancel
+                          </button>
                         )}
                         {meeting.status === "Confirmed" && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => handleUpdateMeetingStatus(meeting.id, "Completed")}
-                              style={{
-                                fontSize: "0.7rem",
-                                color: "white",
-                                background: "var(--accent-green)",
-                                padding: "2px 6px",
-                                borderRadius: "4px",
-                                border: "none",
-                                cursor: "pointer",
-                                fontWeight: "600"
-                              }}
-                            >
-                              Complete
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleUpdateMeetingStatus(meeting.id, "Cancelled")}
-                              style={{
-                                fontSize: "0.7rem",
-                                color: "white",
-                                background: "var(--accent-red)",
-                                padding: "2px 6px",
-                                borderRadius: "4px",
-                                border: "none",
-                                cursor: "pointer",
-                                fontWeight: "600"
-                              }}
-                            >
-                              Cancel
-                            </button>
-                          </>
+                          <button 
+                            className="btn" 
+                            style={{ 
+                              fontSize: "0.7rem", 
+                              color: "#475569", 
+                              background: "#f1f5f9", 
+                              border: "1px solid var(--border-color)", 
+                              padding: "2px 6px",
+                              borderRadius: "4px"
+                            }} 
+                            onClick={() => handleUpdateMeetingStatus(meeting.id, "Completed")}
+                          >
+                            Mark Done
+                          </button>
                         )}
                         <a 
                           href={meeting.meeting_link || "https://meet.google.com"} 
@@ -1835,7 +1922,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                             textDecoration: "none",
                             display: "inline-flex",
                             alignItems: "center",
-                            gap: "0.2rem"
+                            gap: "0.2"
                           }}
                         >
                           <span>Join</span>
@@ -1847,180 +1934,461 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                 ))}
               </div>
             )}
+          </div>
 
-            {/* Google Calendar Public Events Section */}
-            {externalEvents.length > 0 && (
-              <div style={{ marginTop: "1rem", borderTop: "1px solid var(--border-color)", paddingTop: "1rem" }}>
-                <div style={{ fontSize: "0.8rem", fontWeight: "700", color: "var(--primary)", marginBottom: "0.5rem", display: "flex", alignItems: "center", gap: "0.25rem" }}>
-                  <span>🏛 Academic & Public Holidays</span>
+          {/* Right Column: Google Auth Integration */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+            <div className="glass-card" style={{ padding: "1.5rem" }}>
+              <h3 style={{ margin: "0 0 0.5rem 0", fontSize: "1.05rem", fontWeight: "700" }}>🔒 Google Calendar API Status</h3>
+              <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginBottom: "1rem" }}>
+                Integrate Google Calendar token credentials to sync automated video call invites directly.
+              </p>
+              
+              {oauthAuthorized ? (
+                <div 
+                  style={{ 
+                    display: "inline-flex", 
+                    alignItems: "center", 
+                    gap: "0.35rem", 
+                    padding: "0.5rem 1rem", 
+                    fontSize: "0.8rem", 
+                    background: "#d4edda", 
+                    border: "1px solid #c3e6cb", 
+                    borderRadius: "6px", 
+                    color: "#155724", 
+                    fontWeight: "600",
+                    width: "100%",
+                    justifyContent: "center"
+                  }}
+                >
+                  <CheckCircle size={14} />
+                  <span>Google Calendar API Active</span>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem", maxHeight: "150px", overflowY: "auto" }}>
+              ) : oauthConfigured ? (
+                <button 
+                  className="btn"
+                  style={{ 
+                    display: "inline-flex", 
+                    alignItems: "center", 
+                    gap: "0.35rem", 
+                    padding: "0.5rem 1rem", 
+                    fontSize: "0.8rem", 
+                    background: "#fff3cd", 
+                    border: "1px solid #ffeeba", 
+                    color: "#856404", 
+                    fontWeight: "600", 
+                    cursor: "pointer", 
+                    borderRadius: "6px",
+                    width: "100%",
+                    justifyContent: "center"
+                  }}
+                  onClick={handleAuthorizeCalendar}
+                >
+                  <Calendar size={14} />
+                  <span>Authorize Google Calendar Connection</span>
+                </button>
+              ) : (
+                <div 
+                  style={{ 
+                    display: "inline-flex", 
+                    alignItems: "center", 
+                    gap: "0.35rem", 
+                    padding: "0.5rem 1rem", 
+                    fontSize: "0.8rem", 
+                    background: "#f8d7da", 
+                    border: "1px solid #f5c6cb", 
+                    borderRadius: "6px", 
+                    color: "#721c24", 
+                    fontWeight: "600",
+                    width: "100%",
+                    justifyContent: "center"
+                  }}
+                >
+                  <AlertCircle size={14} />
+                  <span>Google OAuth Client Not Configured (.env)</span>
+                </div>
+              )}
+            </div>
+
+            {/* Public Events Section */}
+            {externalEvents.length > 0 && (
+              <div className="glass-card" style={{ padding: "1.25rem" }}>
+                <h4 style={{ margin: "0 0 0.5rem 0", fontSize: "0.95rem", fontWeight: "700" }}>🏛 Academic & Public Holidays</h4>
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem", maxHeight: "250px", overflowY: "auto" }}>
                   {externalEvents.map((evt, idx) => (
-                    <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: "0.75rem", background: "#f8fafc", padding: "5px 8px", borderRadius: "4px", border: "1px solid var(--border-color)" }}>
-                      <span style={{ color: "#000000", fontWeight: "600", marginRight: "0.5rem" }}>{evt.summary}</span>
-                      <span style={{ color: "#000000", flexShrink: 0 }}>{evt.date}</span>
+                    <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: "0.75rem", background: "var(--bg-surface)", padding: "6px 10px", borderRadius: "6px", border: "1px solid var(--border-color)" }}>
+                      <span style={{ color: "var(--text-primary)", fontWeight: "600", marginRight: "0.5rem" }}>{evt.summary}</span>
+                      <span style={{ color: "var(--text-muted)", flexShrink: 0 }}>{evt.date}</span>
                     </div>
                   ))}
                 </div>
               </div>
             )}
           </div>
-
         </div>
-      </div>
+      )}
+
+      {activeSubTab === "discover" && (
+        <div className="animate-in">
+          {/* Directory Lead Finder Card */}
+          <div className="glass-card" style={{ padding: "1.5rem" }}>
+            <h3 style={{ margin: "0 0 0.5rem 0", fontSize: "1.1rem", fontWeight: "700", display: "flex", alignItems: "center", gap: "0.35rem" }}>
+              🏫 Discover & Add Campaign Leads from Directory
+            </h3>
+            <p style={{ margin: "0 0 1.25rem 0", fontSize: "0.8rem", color: "var(--text-dim)" }}>
+              Search through all academic, government, and private incubators. Filter by confidence score rating stars and add them to your targeted campaigns list.
+            </p>
+
+            {/* Filters Panel */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "0.5rem", marginBottom: "1rem", background: "rgba(255, 255, 255, 0.01)", padding: "0.75rem", borderRadius: "6px", border: "1px solid var(--border-color)" }}>
+              <input 
+                type="text"
+                className="form-input"
+                placeholder="Search by name, description..."
+                value={dirSearchQuery}
+                onChange={(e) => setDirSearchQuery(e.target.value)}
+                style={{ fontSize: "0.8rem", padding: "0.4rem 0.6rem", color: "black", background: "#f8fafc" }}
+              />
+              <select 
+                className="form-input"
+                value={dirSelectedRegion}
+                onChange={(e) => setDirSelectedRegion(e.target.value)}
+                style={{ fontSize: "0.8rem", padding: "0.4rem 0.6rem", color: "black", background: "#f8fafc" }}
+              >
+                <option value="">All Regions</option>
+                {regionsList.map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+              <select 
+                className="form-input"
+                value={dirSelectedState}
+                onChange={(e) => setDirSelectedState(e.target.value)}
+                style={{ fontSize: "0.8rem", padding: "0.4rem 0.6rem", color: "black", background: "#f8fafc" }}
+              >
+                <option value="">All States</option>
+                {statesList.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+              <select 
+                className="form-input"
+                value={dirSelectedSector}
+                onChange={(e) => setDirSelectedSector(e.target.value)}
+                style={{ fontSize: "0.8rem", padding: "0.4rem 0.6rem", color: "black", background: "#f8fafc" }}
+              >
+                <option value="">All Sectors</option>
+                {sectorsList.map(sec => <option key={sec} value={sec}>{sec}</option>)}
+              </select>
+              <select 
+                className="form-input"
+                value={dirMinStars}
+                onChange={(e) => setDirMinStars(parseInt(e.target.value))}
+                style={{ fontSize: "0.8rem", padding: "0.4rem 0.6rem", color: "black", background: "#f8fafc" }}
+              >
+                <option value={0}>Any Star Rating</option>
+                <option value={5}>⭐⭐⭐⭐⭐ (5 Stars)</option>
+                <option value={4}>⭐⭐⭐⭐ & above (4+ Stars)</option>
+                <option value={3}>⭐⭐⭐ & above (3+ Stars)</option>
+                <option value={2}>⭐⭐ & above (2+ Stars)</option>
+                <option value={1}>⭐ & above (1+ Star)</option>
+              </select>
+            </div>
+
+            {/* Table List of Incubators (5 per page) */}
+            {paginatedDirIncubators.length === 0 ? (
+              <div style={{ padding: "1.5rem 1rem", textAlign: "center", border: "1px dashed var(--border-color)", borderRadius: "6px", color: "var(--text-dim)", fontSize: "0.85rem" }}>
+                No matching incubators found. Try adjusting your search query or filters.
+              </div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table className="data-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem", textAlign: "left", marginBottom: "1rem" }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--border-color)", paddingBottom: "0.5rem" }}>
+                      <th style={{ padding: "0.5rem", color: "var(--text-dim)" }}>Incubator</th>
+                      <th style={{ padding: "0.5rem", color: "var(--text-dim)" }}>Region & State</th>
+                      <th style={{ padding: "0.5rem", color: "var(--text-dim)", textAlign: "center" }}>Confidence Star</th>
+                      <th style={{ padding: "0.5rem", color: "var(--text-dim)", textAlign: "right" }}>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paginatedDirIncubators.map(inc => {
+                      const isAlreadyLead = leads.some(lead => lead.incubator_id === inc.id);
+                      return (
+                        <tr key={inc.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.03)", verticalAlign: "middle" }}>
+                          <td style={{ padding: "0.5rem" }}>
+                            <div style={{ fontWeight: "600", color: "#000000" }}>{inc.name}</div>
+                            <div style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>{inc.email || "No email available"}</div>
+                          </td>
+                          <td style={{ padding: "0.5rem" }}>{inc.city ? `${inc.city}, ` : ""}{inc.state}</td>
+                          <td style={{ padding: "0.5rem", textAlign: "center" }}>{"⭐".repeat(Math.round(inc.confidence_score * 5))}</td>
+                          <td style={{ padding: "0.5rem", textAlign: "right" }}>
+                            <button 
+                              className="btn" 
+                              style={{ 
+                                fontSize: "0.75rem", 
+                                padding: "0.25rem 0.5rem", 
+                                background: isAlreadyLead ? "rgba(16,185,129,0.1)" : "var(--primary-light)",
+                                color: isAlreadyLead ? "var(--accent-green)" : "var(--primary)",
+                                borderColor: isAlreadyLead ? "rgba(16,185,129,0.2)" : "rgba(0,106,99,0.2)",
+                                fontWeight: "700" 
+                              }}
+                              onClick={() => !isAlreadyLead && handleAddLead(inc)}
+                              disabled={isAlreadyLead || addingLeadId === inc.id}
+                            >
+                              {isAlreadyLead ? "Already in Leads" : addingLeadId === inc.id ? "Adding..." : "Add to Leads"}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+
+                {/* Pagination Controls */}
+                {filteredIncubatorsFromDir.length > itemsPerPage && (
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid var(--border-color)", paddingTop: "0.5rem" }}>
+                    <span style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>
+                      Showing page <strong style={{ color: "black" }}>{dirCurrentPage}</strong> of <strong style={{ color: "black" }}>{totalPages}</strong> ({filteredIncubatorsFromDir.length} total incubators)
+                    </span>
+                    <div style={{ display: "flex", gap: "0.5rem" }}>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        style={{ padding: "0.25rem 0.5rem", fontSize: "0.75rem" }}
+                        onClick={() => setDirCurrentPage(prev => Math.max(1, prev - 1))}
+                        disabled={dirCurrentPage === 1}
+                      >
+                        Previous
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        style={{ padding: "0.25rem 0.5rem", fontSize: "0.75rem" }}
+                        onClick={() => setDirCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                        disabled={dirCurrentPage === totalPages}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* View Result / Detail Drawer Modal */}
       {selectedLeadForDetail && (
         <div className="drawer-backdrop" style={{ zIndex: 10000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setSelectedLeadForDetail(null)}>
-          <div className="glass-card" style={{ width: "90%", maxWidth: "550px", padding: "1.5rem", background: "#ffffff", border: "1px solid var(--border-color)", zIndex: 10001 }} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ margin: "0 0 1rem 0", fontSize: "1.15rem", color: "var(--primary)", fontWeight: "800" }}>
-              📊 AI Outreach Result Analysis
-            </h3>
-            
-            <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                <div>
-                  <strong style={{ fontSize: "0.8rem", color: "#000000" }}>Incubator Name</strong>
-                  <div style={{ fontWeight: "700", color: "#000000" }}>{selectedLeadForDetail.incubator_name}</div>
-                  <div style={{ fontSize: "0.85rem", color: "#000000" }}>{selectedLeadForDetail.email}</div>
-                </div>
-                <div>
-                  <strong style={{ fontSize: "0.8rem", color: "#000000" }}>Campaign Status</strong>
-                  <div style={{ marginTop: "0.25rem" }}>
-                    <select
-                      value={selectedLeadForDetail.status}
-                      onChange={(e) => handleUpdateLeadStatus(selectedLeadForDetail.id, e.target.value)}
-                      className="form-input"
-                      style={{ 
-                        fontSize: "0.8rem", 
-                        padding: "0.3rem 0.5rem", 
-                        color: "black", 
-                        background: "#f8fafc",
-                        border: "1px solid var(--border-color)",
-                        borderRadius: "4px"
-                      }}
-                    >
-                      <option value="Draft">Draft</option>
-                      <option value="Sent">Sent</option>
-                      <option value="Replied">Replied</option>
-                      <option value="Meeting Scheduled">Meeting Scheduled</option>
-                      <option value="Not Interested">Not Interested</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <strong style={{ fontSize: "0.8rem", color: "#000000" }}>Latest Reply Received</strong>
-                <div style={{ 
-                  background: "#f8fafc", 
-                  padding: "0.75rem", 
-                  borderRadius: "6px", 
-                  fontSize: "0.85rem", 
-                  color: "#000000", 
-                  border: "1px solid var(--border-color)",
-                  marginTop: "0.25rem",
-                  maxHeight: "100px",
-                  overflowY: "auto",
-                  whiteSpace: "pre-wrap"
-                }}>
-                  {selectedLeadForDetail.reply_text ? `"${selectedLeadForDetail.reply_text}"` : "No reply detected yet. Send email and reply to it, then click Scanning Inbox."}
-                </div>
-              </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
-                <div>
-                  <strong style={{ fontSize: "0.8rem", color: "#000000" }}>Intent Classification</strong>
-                  <div style={{ marginTop: "0.25rem" }}>
-                    <span style={{ 
-                      fontSize: "0.8rem", 
-                      fontWeight: "700",
-                      color: "#000000"
-                    }}>
-                      {selectedLeadForDetail.intent_classification || "Not Scanned Yet"}
-                    </span>
-                  </div>
-                </div>
-
-                <div>
-                  <strong style={{ fontSize: "0.8rem", color: "#000000" }}>Computed Lead Score</strong>
-                  <div style={{ fontWeight: "700", fontSize: "1.1rem", color: "#000000" }}>
-                    {selectedLeadForDetail.lead_score}/100
-                  </div>
-                </div>
-              </div>
-
-              {/* Campaign Notes & CRM History section */}
-              <div>
-                <strong style={{ fontSize: "0.8rem", color: "#000000" }}>Campaign Notes & CRM History</strong>
-                <textarea
-                  className="form-input"
-                  rows={3}
-                  value={leadNotesInput}
-                  onChange={(e) => setLeadNotesInput(e.target.value)}
-                  placeholder="Enter custom notes, key contact points, or partnership status details..."
-                  style={{ 
-                    color: "#000000", 
-                    background: "#f8fafc", 
-                    width: "100%", 
-                    padding: "0.5rem", 
-                    fontSize: "0.85rem", 
-                    marginTop: "0.25rem",
-                    border: "1px solid var(--border-color)",
-                    borderRadius: "6px",
-                    resize: "vertical"
-                  }}
-                />
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  style={{ marginTop: "0.5rem", padding: "0.35rem 0.75rem", fontSize: "0.8rem", background: "var(--primary)" }}
-                  onClick={() => handleUpdateLeadNotes(selectedLeadForDetail.id, leadNotesInput)}
-                >
-                  Save Notes
-                </button>
-              </div>
-
-              {selectedLeadForDetail.lead_score >= 80 && (
-                <div style={{ 
-                  padding: "0.75rem", 
-                  background: "rgba(16,185,129,0.06)", 
-                  border: "1px solid rgba(16,185,129,0.2)", 
-                  borderRadius: "6px",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "0.35rem"
-                }}>
-                  <div style={{ fontSize: "0.8rem", fontWeight: "700", color: "#000000", display: "flex", alignItems: "center", gap: "0.25rem" }}>
-                    <CheckCircle size={14} />
-                    <span>Google Calendar Meeting Synchronized</span>
-                  </div>
-                  <div style={{ fontSize: "0.75rem", color: "#000000" }}>
-                    <strong>Meeting:</strong> MOU Collaboration Partnership Discussion
-                  </div>
-                  <div style={{ fontSize: "0.75rem", color: "#000000" }}>
-                    <strong>Scheduled:</strong> {selectedLeadForDetail.meeting_scheduled_at}
-                  </div>
-                  <a 
-                    href={selectedLeadForDetail.meeting_link || "https://meet.google.com"} 
-                    target="_blank" 
-                    rel="noreferrer" 
-                    style={{ fontSize: "0.75rem", color: "var(--accent-green)", textDecoration: "underline", alignSelf: "flex-start", marginTop: "0.25rem", fontWeight: "600" }}
-                  >
-                    Open Google Meet Invite URL
-                  </a>
-                </div>
-              )}
-            </div>
-
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "1.5rem" }}>
+          <div className="glass-card animate-in" style={{ width: "95%", maxWidth: "840px", padding: "1.75rem", background: "#ffffff", border: "1px solid var(--border-color)", zIndex: 10001, boxShadow: "var(--shadow-xl)" }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem", borderBottom: "1px solid var(--border-color)", paddingBottom: "0.75rem" }}>
+              <h3 style={{ margin: 0, fontSize: "1.2rem", color: "var(--primary)", fontWeight: "800" }}>
+                📊 AI Outreach Result Analysis
+              </h3>
               <button 
                 type="button" 
-                className="btn btn-secondary" 
+                className="btn btn-ghost" 
+                style={{ padding: "4px 8px", fontSize: "0.85rem" }} 
                 onClick={() => setSelectedLeadForDetail(null)}
               >
                 Close
               </button>
+            </div>
+            
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: "1.5rem" }}>
+              
+              {/* Left Column: Incubator Details & CRM Notes */}
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.85rem" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", background: "var(--bg-surface)", padding: "12px", borderRadius: "8px", border: "1px solid var(--border-color)" }}>
+                  <div>
+                    <strong style={{ fontSize: "0.75rem", color: "var(--text-dim)", textTransform: "uppercase" }}>
+                      {selectedLeadForDetail.incubator_id === "incubein_cohort" ? "Startup Partner" : "Incubator Partner"}
+                    </strong>
+                    <div style={{ fontWeight: "700", color: "var(--text-primary)", fontSize: "0.95rem", marginTop: "2px" }}>{selectedLeadForDetail.incubator_name}</div>
+                    <div style={{ fontSize: "0.8rem", color: "var(--primary)", fontWeight: 500 }}>{selectedLeadForDetail.email}</div>
+                  </div>
+                  <div>
+                    <strong style={{ fontSize: "0.75rem", color: "var(--text-dim)", textTransform: "uppercase" }}>Status</strong>
+                    <div style={{ marginTop: "0.25rem" }}>
+                      <select
+                        value={selectedLeadForDetail.status || "Draft"}
+                        onChange={(e) => handleUpdateLeadStatus(selectedLeadForDetail.id, e.target.value)}
+                        className="form-input"
+                        style={{ 
+                          fontSize: "0.78rem", 
+                          padding: "0.25rem 0.5rem", 
+                          color: "var(--text-primary)", 
+                          background: "#ffffff",
+                          border: "1px solid var(--border-color)",
+                          borderRadius: "6px",
+                          fontWeight: 600
+                        }}
+                      >
+                        <option value="Draft">Draft</option>
+                        <option value="Sent">Sent</option>
+                        <option value="Follow-up Sent">Follow-up Sent</option>
+                        <option value="Replied">Replied</option>
+                        <option value="Meeting Scheduled">Meeting Scheduled</option>
+                        <option value="Not Interested">Not Interested</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", background: "var(--bg-surface)", padding: "12px", borderRadius: "8px", border: "1px solid var(--border-color)" }}>
+                  <div>
+                    <strong style={{ fontSize: "0.75rem", color: "var(--text-dim)", textTransform: "uppercase" }}>Follow-ups Sent</strong>
+                    <div style={{ marginTop: "0.25rem", fontSize: "0.85rem", color: "var(--text-primary)", fontWeight: "700" }}>
+                      {selectedLeadForDetail.followup_count || 0} / 2
+                    </div>
+                  </div>
+                  <div>
+                    <strong style={{ fontSize: "0.75rem", color: "var(--text-dim)", textTransform: "uppercase" }}>Last Follow-up Sent</strong>
+                    <div style={{ marginTop: "0.25rem", fontSize: "0.78rem", color: "var(--text-primary)" }}>
+                      {selectedLeadForDetail.last_followup_at ? new Date(selectedLeadForDetail.last_followup_at).toLocaleDateString() : "N/A"}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Campaign Notes & CRM History */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  <strong style={{ fontSize: "0.75rem", color: "var(--text-dim)", textTransform: "uppercase" }}>Campaign Notes & CRM History</strong>
+                  <textarea
+                    className="form-input"
+                    rows={4}
+                    value={leadNotesInput}
+                    onChange={(e) => setLeadNotesInput(e.target.value)}
+                    placeholder="Enter custom notes, key contact points, or partnership status details..."
+                    style={{ 
+                      color: "var(--text-primary)", 
+                      background: "#ffffff", 
+                      width: "100%", 
+                      padding: "0.5rem", 
+                      fontSize: "0.82rem", 
+                      border: "1px solid var(--border-color)",
+                      borderRadius: "6px",
+                      resize: "none"
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    style={{ padding: "0.35rem 0.75rem", fontSize: "0.78rem", alignSelf: "flex-end" }}
+                    onClick={() => handleUpdateLeadNotes(selectedLeadForDetail.id, leadNotesInput)}
+                  >
+                    Save Notes
+                  </button>
+                </div>
+              </div>
+              
+              {/* Right Column: AI Analysis Metrics */}
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.85rem" }}>
+                <div>
+                  <strong style={{ fontSize: "0.75rem", color: "var(--text-dim)", textTransform: "uppercase" }}>Latest Reply Received</strong>
+                  <div style={{ 
+                    background: "var(--bg-surface)", 
+                    padding: "10px 12px", 
+                    borderRadius: "6px", 
+                    fontSize: "0.8rem", 
+                    color: "var(--text-primary)", 
+                    border: "1px solid var(--border-color)",
+                    marginTop: "0.25rem",
+                    maxHeight: "100px",
+                    overflowY: "auto",
+                    whiteSpace: "pre-wrap",
+                    fontFamily: "var(--font-mono)",
+                    lineHeight: 1.4
+                  }}>
+                    {selectedLeadForDetail.reply_text ? `"${selectedLeadForDetail.reply_text}"` : "No reply detected yet. Send email and reply to it, then click Scanning Inbox."}
+                  </div>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", background: "var(--bg-surface)", padding: "12px", borderRadius: "8px", border: "1px solid var(--border-color)" }}>
+                  <div>
+                    <strong style={{ fontSize: "0.75rem", color: "var(--text-dim)", textTransform: "uppercase" }}>Intent</strong>
+                    <div style={{ marginTop: "0.25rem" }}>
+                      <span style={{ fontSize: "0.85rem", fontWeight: "700", color: "var(--text-primary)" }}>
+                        {selectedLeadForDetail.intent_classification || "Not Scanned"}
+                      </span>
+                    </div>
+                  </div>
+                  <div>
+                    <strong style={{ fontSize: "0.75rem", color: "var(--text-dim)", textTransform: "uppercase" }}>Lead Score</strong>
+                    <div style={{ fontWeight: "800", fontSize: "1.1rem", color: "var(--primary)" }}>
+                      {selectedLeadForDetail.lead_score}/100
+                    </div>
+                  </div>
+                </div>
+
+                {selectedLeadForDetail.reply_text && (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", background: "var(--bg-surface)", padding: "12px", borderRadius: "8px", border: "1px solid var(--border-color)" }}>
+                    <div>
+                      <strong style={{ fontSize: "0.75rem", color: "var(--text-dim)", textTransform: "uppercase" }}>Sentiment</strong>
+                      <div style={{ marginTop: "0.25rem" }}>
+                        <span style={{ 
+                          fontSize: "0.72rem", 
+                          padding: "3px 8px", 
+                          borderRadius: "12px", 
+                          fontWeight: "700",
+                          background: 
+                            selectedLeadForDetail.reply_sentiment === "Highly Interested" ? "#d1fae5" :
+                            selectedLeadForDetail.reply_sentiment === "Tentative" ? "#fef3c7" :
+                            selectedLeadForDetail.reply_sentiment === "Requires Clarification" ? "#dbeafe" :
+                            selectedLeadForDetail.reply_sentiment === "Uninterested" ? "#fee2e2" :
+                            "#f3f4f6",
+                          color: 
+                            selectedLeadForDetail.reply_sentiment === "Highly Interested" ? "#065f46" :
+                            selectedLeadForDetail.reply_sentiment === "Tentative" ? "#92400e" :
+                            selectedLeadForDetail.reply_sentiment === "Requires Clarification" ? "#1e40af" :
+                            selectedLeadForDetail.reply_sentiment === "Uninterested" ? "#991b1b" :
+                            "#374151"
+                        }}>
+                          {selectedLeadForDetail.reply_sentiment || "Neutral"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div>
+                      <strong style={{ fontSize: "0.75rem", color: "var(--text-dim)", textTransform: "uppercase" }}>Action Urgency</strong>
+                      <div style={{ marginTop: "0.25rem" }}>
+                        <span style={{ 
+                          fontSize: "0.72rem", 
+                          padding: "3px 8px", 
+                          borderRadius: "12px", 
+                          fontWeight: "700",
+                          background: 
+                            selectedLeadForDetail.reply_urgency === "High" ? "#ffe4e6" :
+                            selectedLeadForDetail.reply_urgency === "Medium" ? "#ffedd5" :
+                            "#f1f5f9",
+                          color: 
+                            selectedLeadForDetail.reply_urgency === "High" ? "#9f1239" :
+                            selectedLeadForDetail.reply_urgency === "Medium" ? "#9a3412" :
+                            "#475569"
+                        }}>
+                          {selectedLeadForDetail.reply_urgency || "Low"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div style={{ gridColumn: "span 2", borderTop: "1px solid var(--border-color)", paddingTop: "8px", marginTop: "4px" }}>
+                      <strong style={{ fontSize: "0.75rem", color: "var(--text-dim)", textTransform: "uppercase" }}>Category / Reason</strong>
+                      <div style={{ marginTop: "0.25rem" }}>
+                        <span style={{ 
+                          fontSize: "0.75rem", 
+                          padding: "3px 8px", 
+                          borderRadius: "4px", 
+                          fontWeight: "600",
+                          background: "#ffffff",
+                          color: "var(--text-primary)",
+                          border: "1px solid var(--border-color)",
+                          display: "inline-block"
+                        }}>
+                          {selectedLeadForDetail.reply_reason || "Other"}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
             </div>
           </div>
         </div>

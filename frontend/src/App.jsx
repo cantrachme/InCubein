@@ -38,8 +38,7 @@ const NAV_ITEMS = [
     items: [
       { id: "directory",  label: "Incubators Directory", Icon: Building2,  subtitle: "Discover & search TBIs" },
       { id: "startups_directory", label: "Startups Directory", Icon: RocketIcon, subtitle: "Ecosystem startups list" },
-      { id: "outreach_incubators", label: "Incubator Outreach", Icon: Sparkles, subtitle: "MOU drafts & campaigns" },
-      { id: "outreach_startups", label: "Startup Outreach", Icon: Sparkles, subtitle: "Onboarding & campaigns" },
+      { id: "outreach", label: "Outreach Hub", Icon: Sparkles, subtitle: "Campaigns & Onboarding" },
     ],
   },
   {
@@ -53,8 +52,7 @@ const NAV_ITEMS = [
 const PAGE_META = {
   dashboard:        { title: "Ecosystem Insights & Analytics",        sub: "Aggregated metrics, state distributions, and technology verticals." },
   directory:        { title: "Indian Incubators Directory",           sub: "Discover and search academic, government, and private TBIs." },
-  outreach_incubators: { title: "Incubator Outreach & Campaigns",     sub: "Draft collaboration MOUs, execute digital signatures, and run campaigns." },
-  outreach_startups: { title: "Startup Outreach & Onboarding",       sub: "Run onboarding campaigns, track replies, and schedule startup cohort calls." },
+  outreach:         { title: "Outreach & Onboarding Hub",             sub: "Draft MOUs, run targeted campaigns, and track startup pipeline." },
   startups_directory: { title: "Ecosystem Startups Directory",        sub: "Filter, search, and manage cohort and ecosystem startups." },
   cohort_evaluator: { title: "INCUBEIN Cohort Evaluator",             sub: "Secure field-level encryption, multi-criteria scoring, AI reviews, and similarity matching." },
 };
@@ -84,7 +82,7 @@ export default function App() {
 
   const handleDraftMouFromFinder = (incubatorName) => {
     setMouPreselectedIncubator(incubatorName);
-    setActiveTab("outreach_incubators");
+    setActiveTab("outreach");
   };
 
   const fetchEcosystemData = useCallback(async () => {
@@ -94,7 +92,7 @@ export default function App() {
       const analytics = await analyticsRes.json();
       setAnalyticsData(analytics);
 
-      if (activeTab === "outreach_incubators" || activeTab === "outreach_startups") {
+      if (activeTab === "outreach") {
         setOutreachRefreshTrigger(prev => prev + 1);
       }
 
@@ -181,10 +179,8 @@ export default function App() {
         return <AnalyticsDashboard analyticsData={analyticsData} loading={loading} />;
       case "directory":
         return <DirectoryView filtersData={analyticsData ? analyticsData.filters : null} onDraftMou={handleDraftMouFromFinder} />;
-      case "outreach_incubators":
-        return <OutreachAutomation defaultTargetType="incubators" preselectedIncubatorName={mouPreselectedIncubator} refreshTrigger={outreachRefreshTrigger} />;
-      case "outreach_startups":
-        return <OutreachAutomation defaultTargetType="startups" preselectedIncubatorName={mouPreselectedIncubator} refreshTrigger={outreachRefreshTrigger} />;
+      case "outreach":
+        return <OutreachAutomation preselectedIncubatorName={mouPreselectedIncubator} refreshTrigger={outreachRefreshTrigger} />;
       case "startups_directory":
         return <StartupsDirectory />;
       case "cohort_evaluator":

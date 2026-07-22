@@ -27,12 +27,10 @@ from app.enums.organization_type import OrganizationType
 if TYPE_CHECKING:
     from app.models.ai_enrichment import AIEnrichment
     from app.models.city import City
-    from app.models.contact import Contact
     from app.models.mentor import Mentor
     from app.models.relationship import Relationship
     from app.models.source_record import SourceRecord
     from app.models.startup import Startup
-    from app.models.website import Website
 
 
 class Incubator(Base):
@@ -106,14 +104,6 @@ class Incubator(Base):
         "Mentor",
         back_populates="incubator",
     )
-    contacts: Mapped[list[Contact]] = relationship(
-        "Contact",
-        back_populates="incubator",
-    )
-    websites: Mapped[list[Website]] = relationship(
-        "Website",
-        back_populates="incubator",
-    )
     source_records: Mapped[list[SourceRecord]] = relationship(
         "SourceRecord",
         back_populates="incubator",
@@ -124,5 +114,13 @@ class Incubator(Base):
     )
     relationships: Mapped[list[Relationship]] = relationship(
         "Relationship",
-        back_populates="incubator",
+        primaryjoin=(
+            "or_("
+            "and_(Incubator.id == foreign(Relationship.source_id), "
+            "Relationship.source_type == 'Incubator'), "
+            "and_(Incubator.id == foreign(Relationship.target_id), "
+            "Relationship.target_type == 'Incubator')"
+            ")"
+        ),
+        viewonly=True,
     )

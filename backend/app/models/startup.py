@@ -108,5 +108,13 @@ class Startup(Base):
     )
     relationships: Mapped[list[Relationship]] = relationship(
         "Relationship",
-        back_populates="startup",
+        primaryjoin=(
+            "or_("
+            "and_(Startup.id == foreign(Relationship.source_id), "
+            "Relationship.source_type == 'Startup'), "
+            "and_(Startup.id == foreign(Relationship.target_id), "
+            "Relationship.target_type == 'Startup')"
+            ")"
+        ),
+        viewonly=True,
     )

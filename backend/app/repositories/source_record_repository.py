@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.enums.entity_type import EntityType
@@ -59,6 +59,40 @@ class SourceRecordRepository:
     def delete(self, source_record: SourceRecord) -> None:
         self.db.delete(source_record)
         self.db.flush()
+
+    def reassign_incubator(
+        self,
+        duplicate_id: uuid.UUID,
+        canonical_id: uuid.UUID,
+    ) -> int:
+        if duplicate_id == canonical_id:
+            return 0
+
+        statement = (
+            update(SourceRecord)
+            .where(SourceRecord.incubator_id == duplicate_id)
+            .values(incubator_id=canonical_id)
+            .execution_options(synchronize_session="fetch")
+        )
+        result = self.db.execute(statement)
+        return result.rowcount or 0
+
+    def reassign_startup(
+        self,
+        duplicate_id: uuid.UUID,
+        canonical_id: uuid.UUID,
+    ) -> int:
+        if duplicate_id == canonical_id:
+            return 0
+
+        statement = (
+            update(SourceRecord)
+            .where(SourceRecord.startup_id == duplicate_id)
+            .values(startup_id=canonical_id)
+            .execution_options(synchronize_session="fetch")
+        )
+        result = self.db.execute(statement)
+        return result.rowcount or 0
 
     def list_by_entity(
         self,

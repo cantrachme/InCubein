@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.enums.ai_enrichment_status import AIEnrichmentStatus
@@ -33,6 +33,40 @@ class AIEnrichmentRepository:
     def delete(self, ai_enrichment: AIEnrichment) -> None:
         self.db.delete(ai_enrichment)
         self.db.flush()
+
+    def reassign_incubator(
+        self,
+        duplicate_id: uuid.UUID,
+        canonical_id: uuid.UUID,
+    ) -> int:
+        if duplicate_id == canonical_id:
+            return 0
+
+        statement = (
+            update(AIEnrichment)
+            .where(AIEnrichment.incubator_id == duplicate_id)
+            .values(incubator_id=canonical_id)
+            .execution_options(synchronize_session="fetch")
+        )
+        result = self.db.execute(statement)
+        return result.rowcount or 0
+
+    def reassign_startup(
+        self,
+        duplicate_id: uuid.UUID,
+        canonical_id: uuid.UUID,
+    ) -> int:
+        if duplicate_id == canonical_id:
+            return 0
+
+        statement = (
+            update(AIEnrichment)
+            .where(AIEnrichment.startup_id == duplicate_id)
+            .values(startup_id=canonical_id)
+            .execution_options(synchronize_session="fetch")
+        )
+        result = self.db.execute(statement)
+        return result.rowcount or 0
 
     def list_by_entity(
         self,

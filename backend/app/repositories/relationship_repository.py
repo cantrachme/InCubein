@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import exists, select
+from sqlalchemy import delete, exists, func, select, update
 from sqlalchemy.orm import Session
 
 from app.enums.relationship import RelationshipEntityType, RelationshipType
@@ -65,6 +65,76 @@ class RelationshipRepository:
     def delete(self, relationship: Relationship) -> None:
         self.db.delete(relationship)
         self.db.flush()
+
+    def reassign_source(
+        self,
+        source_type: RelationshipEntityType,
+        duplicate_id: uuid.UUID,
+        canonical_id: uuid.UUID,
+    ) -> int:
+        if duplicate_id == canonical_id:
+            return 0
+
+        statement = (
+            update(Relationship)
+            .where(
+                Relationship.source_type == source_type,
+                Relationship.source_id == duplicate_id,
+            )
+            .values(source_id=canonical_id)
+            .execution_options(synchronize_session="fetch")
+        )
+        result = self.db.execute(statement)
+        return result.rowcount or 0
+
+    def reassign_target(
+        self,
+        target_type: RelationshipEntityType,
+        duplicate_id: uuid.UUID,
+        canonical_id: uuid.UUID,
+    ) -> int:
+        if duplicate_id == canonical_id:
+            return 0
+
+        statement = (
+            update(Relationship)
+            .where(
+                Relationship.target_type == target_type,
+                Relationship.target_id == duplicate_id,
+            )
+            .values(target_id=canonical_id)
+            .execution_options(synchronize_session="fetch")
+        )
+        result = self.db.execute(statement)
+        return result.rowcount or 0
+
+    def deduplicate_edges(self) -> int:
+        ranked_edges = select(
+            Relationship.id.label("id"),
+            func.row_number()
+            .over(
+                partition_by=(
+                    Relationship.source_type,
+                    Relationship.source_id,
+                    Relationship.relationship_type,
+                    Relationship.target_type,
+                    Relationship.target_id,
+                    Relationship.target_value,
+                ),
+                order_by=Relationship.id,
+            )
+            .label("edge_rank"),
+        ).subquery()
+        duplicate_ids = select(ranked_edges.c.id).where(
+            ranked_edges.c.edge_rank > 1
+        )
+        statement = (
+            delete(Relationship)
+            .where(Relationship.id.in_(duplicate_ids))
+            .execution_options(synchronize_session="fetch")
+        )
+        result = self.db.execute(statement)
+        return result.rowcount or 0
 
     def exists_edge(
         self,

@@ -85,25 +85,23 @@ def run_pipeline(
         stage = stage.lower()
         if stage == "scrape":
             res = run_scraper_pipeline(db)
-            db.commit()
-            return PipelineRunResponse(status="success", message="Scraper pipeline run complete.", details=res)
+            response = PipelineRunResponse(status="success", message="Scraper pipeline run complete.", details=res)
         elif stage == "clean":
-            res = run_cleaner_pipeline()
-            return PipelineRunResponse(status="success", message="Cleaner pipeline run complete.", details=res)
+            res = run_cleaner_pipeline(db)
+            response = PipelineRunResponse(status="success", message="Cleaner pipeline run complete.", details=res)
         elif stage == "resolve":
-            res = run_resolution_pipeline()
-            return PipelineRunResponse(status="success", message="Entity resolution pipeline run complete.", details=res)
+            res = run_resolution_pipeline(db)
+            response = PipelineRunResponse(status="success", message="Entity resolution pipeline run complete.", details=res)
         elif stage == "enrich":
-            res = run_enricher_pipeline()
-            return PipelineRunResponse(status="success", message="AI enrichment pipeline run complete.", details=res)
+            res = run_enricher_pipeline(db)
+            response = PipelineRunResponse(status="success", message="AI enrichment pipeline run complete.", details=res)
         elif stage == "all":
             # Run all sequentially
             scrape_res = run_scraper_pipeline(db)
-            db.commit()
-            clean_res = run_cleaner_pipeline()
-            resolve_res = run_resolution_pipeline()
-            enrich_res = run_enricher_pipeline()
-            return PipelineRunResponse(
+            clean_res = run_cleaner_pipeline(db)
+            resolve_res = run_resolution_pipeline(db)
+            enrich_res = run_enricher_pipeline(db)
+            response = PipelineRunResponse(
                 status="success",
                 message="Complete pipeline (Scrape -> Clean -> Resolve -> Enrich) executed successfully.",
                 details={
@@ -115,6 +113,8 @@ def run_pipeline(
             )
         else:
             raise HTTPException(status_code=400, detail="Invalid pipeline stage. Select from: scrape, clean, resolve, enrich, all")
+        db.commit()
+        return response
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -3074,7 +3074,6 @@ def clear_startups_directory():
         return {"status": "success", "message": f"Successfully cleared {res.deleted_count} startups from the directory."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 

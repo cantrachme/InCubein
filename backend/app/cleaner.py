@@ -1,6 +1,18 @@
 import re
-from datetime import datetime
-from .database import get_db_connection, log_pipeline_step
+
+from sqlalchemy.orm import Session
+
+from app.enums.entity_type import EntityType
+from app.enums.source_status import SourceStatus
+from app.models.city import City
+from app.models.state import State
+from app.repositories.city_repository import CityRepository
+from app.repositories.incubator_repository import IncubatorRepository
+from app.repositories.investor_repository import InvestorRepository
+from app.repositories.mentor_repository import MentorRepository
+from app.repositories.source_record_repository import SourceRecordRepository
+from app.repositories.startup_repository import StartupRepository
+from app.repositories.state_repository import StateRepository
 
 # State normalization mapping
 STATE_MAPPING = {
@@ -70,88 +82,134 @@ def normalize_url(url_str):
         url_clean = "https://" + url_clean
     return url_clean
 
-def run_cleaner_pipeline():
-    log_pipeline_step("CLEAN", "START", "Starting data cleaning and standardization rules...")
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    try:
-        # 1. Clean Incubators
-        cursor.execute("SELECT * FROM incubators")
-        incubators = cursor.fetchall()
-        cleaned_incubators_count = 0
-        
-        for inc in incubators:
-            inc_id = inc["id"]
-            
-            # Clean elements
-            clean_state = normalize_state(inc["state"])
-            clean_city = normalize_city(inc["city"])
-            clean_email = validate_email(inc["email"])
-            clean_website = normalize_url(inc["website"])
-            
-            # Calculate adjustments to confidence score
-            conf = inc["confidence_score"]
-            if clean_state != inc["state"] or clean_city != inc["city"] or clean_email != inc["email"] or clean_website != inc["website"]:
-                conf = min(0.95, conf + 0.15) # Boost confidence since data is now normalized/validated
-            
-            cursor.execute('''
-                UPDATE incubators
-                SET state = ?, city = ?, email = ?, website = ?, confidence_score = ?, status = 'cleaned', last_updated = ?
-                WHERE id = ?
-            ''', (clean_state, clean_city, clean_email, clean_website, conf, datetime.now().isoformat(), inc_id))
+def run_cleaner_pipeline(db: Session):
+    incubator_repository = IncubatorRepository(db)
+    startup_repository = StartupRepository(db)
+    mentor_repository = MentorRepository(db)
+    investor_repository = InvestorRepository(db)
+    source_record_repository = SourceRecordRepository(db)
+    state_repository = StateRepository(db)
+    city_repository = CityRepository(db)
+
+    cleaned_incubators_count = 0
+    skip = 0
+    while incubators := incubator_repository.list(skip=skip, limit=100):
+        skip += len(incubators)
+        for incubator in incubators:
+            source_records = source_record_repository.list_by_entity(
+                EntityType.INCUBATOR,
+                incubator.id,
+            )
+            if not source_records:
+                continue
+
+            for source_record in source_records:
+                raw_payload = source_record.raw_payload
+                clean_state = normalize_state(raw_payload.get("state"))
+                clean_city = normalize_city(raw_payload.get("city"))
+                validate_email(raw_payload.get("email"))
+                normalize_url(raw_payload.get("website"))
+
+                if clean_state and clean_city:
+                    state = state_repository.get_by_name("IN", clean_state)
+                    if state is None:
+                        state_code = clean_state.upper()
+                        state = state_repository.get_by_code("IN", state_code)
+                    if state is None:
+                        state = state_repository.create(
+                            State(
+                                name=clean_state,
+                                code=clean_state.upper(),
+                                country_code="IN",
+                            )
+                        )
+
+                    city = city_repository.get_by_state_and_name(
+                        state.id,
+                        clean_city,
+                    )
+                    if city is None:
+                        city = city_repository.create(
+                            City(
+                                state_id=state.id,
+                                name=clean_city,
+                            )
+                        )
+
+                    if incubator.city_id != city.id:
+                        incubator.city_id = city.id
+                        incubator_repository.update(incubator)
+
+                source_record.status = SourceStatus.PROCESSED
+                source_record_repository.update(source_record)
+
             cleaned_incubators_count += 1
-            
-        # 2. Clean Startups
-        cursor.execute("SELECT * FROM startups")
-        startups = cursor.fetchall()
-        cleaned_startups_count = 0
-        
-        for start in startups:
-            start_id = start["id"]
-            
-            clean_city = normalize_city(start["hq_city"])
-            clean_website = normalize_url(start["website"])
-            
-            conf = start["confidence_score"]
-            if clean_city != start["hq_city"] or clean_website != start["website"]:
-                conf = min(0.95, conf + 0.15)
-                
-            cursor.execute('''
-                UPDATE startups
-                SET hq_city = ?, website = ?, confidence_score = ?, status = 'cleaned', last_updated = ?
-                WHERE id = ?
-            ''', (clean_city, clean_website, conf, datetime.now().isoformat(), start_id))
+
+    cleaned_startups_count = 0
+    skip = 0
+    while startups := startup_repository.list(skip=skip, limit=100):
+        skip += len(startups)
+        for startup in startups:
+            source_records = source_record_repository.list_by_entity(
+                EntityType.STARTUP,
+                startup.id,
+            )
+            if not source_records:
+                continue
+
+            for source_record in source_records:
+                raw_payload = source_record.raw_payload
+                normalize_city(raw_payload.get("hq_city"))
+                clean_website = normalize_url(raw_payload.get("website"))
+                if startup.website != clean_website:
+                    startup.website = clean_website
+                    startup_repository.update(startup)
+
+                source_record.status = SourceStatus.PROCESSED
+                source_record_repository.update(source_record)
+
             cleaned_startups_count += 1
 
-        # 3. Clean Investors
-        cursor.execute("SELECT * FROM investors")
-        investors = cursor.fetchall()
-        for inv in investors:
-            clean_email = validate_email(inv["email"])
-            cursor.execute('''
-                UPDATE investors
-                SET email = ?
-                WHERE id = ?
-            ''', (clean_email, inv["id"]))
+    skip = 0
+    while investors := investor_repository.list(skip=skip, limit=100):
+        skip += len(investors)
+        for investor in investors:
+            source_records = source_record_repository.list_by_entity(
+                EntityType.INVESTOR,
+                investor.id,
+            )
+            for source_record in source_records:
+                clean_email = validate_email(
+                    source_record.raw_payload.get("email")
+                )
+                if investor.email != clean_email:
+                    investor.email = clean_email
+                    investor_repository.update(investor)
 
-        # 4. Clean Mentors
-        cursor.execute("SELECT * FROM mentors")
-        mentors = cursor.fetchall()
-        for m in mentors:
-            clean_email = validate_email(m["email"])
-            cursor.execute('''
-                UPDATE mentors
-                SET email = ?
-                WHERE id = ?
-            ''', (clean_email, m["id"]))
-            
-        conn.commit()
-        log_pipeline_step("CLEAN", "SUCCESS", f"Successfully cleaned and normalized {cleaned_incubators_count} incubators and {cleaned_startups_count} startups.")
-        return {"status": "success", "cleaned_incubators": cleaned_incubators_count, "cleaned_startups": cleaned_startups_count}
-    except Exception as e:
-        conn.rollback()
-        log_pipeline_step("CLEAN", "ERROR", f"Error during cleaning: {str(e)}")
-        raise e
-    finally:
-        conn.close()
+                source_record.status = SourceStatus.PROCESSED
+                source_record_repository.update(source_record)
+
+    skip = 0
+    while mentors := mentor_repository.list(skip=skip, limit=100):
+        skip += len(mentors)
+        for mentor in mentors:
+            source_records = source_record_repository.list_by_entity(
+                EntityType.MENTOR,
+                mentor.id,
+            )
+            for source_record in source_records:
+                clean_email = validate_email(
+                    source_record.raw_payload.get("email")
+                )
+                if mentor.email != clean_email:
+                    mentor.email = clean_email
+                    mentor_repository.update(mentor)
+
+                source_record.status = SourceStatus.PROCESSED
+                source_record_repository.update(source_record)
+
+    return {
+        "status": "success",
+        "cleaned_incubators": cleaned_incubators_count,
+        "cleaned_startups": cleaned_startups_count,
+    }

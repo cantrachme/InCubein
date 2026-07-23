@@ -1,5 +1,6 @@
 from app.models.ai_enrichment import AIEnrichment
 from app.models.city import City
+from app.models.incubein_application import IncubeinApplication
 from app.models.incubator import Incubator
 from app.models.investor import Investor
 from app.models.mentor import Mentor
@@ -13,6 +14,7 @@ from app.models.startup import Startup
 __all__ = [
     "AIEnrichment",
     "City",
+    "IncubeinApplication",
     "Incubator",
     "Investor",
     "Mentor",

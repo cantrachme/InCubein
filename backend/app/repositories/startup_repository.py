@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import exists, select
+from sqlalchemy import exists, select, update
 from sqlalchemy.orm import Session
 
 from app.models.startup import Startup
@@ -35,6 +35,23 @@ class StartupRepository:
     def delete(self, startup: Startup) -> None:
         self.db.delete(startup)
         self.db.flush()
+
+    def reassign_incubator(
+        self,
+        duplicate_id: uuid.UUID,
+        canonical_id: uuid.UUID,
+    ) -> int:
+        if duplicate_id == canonical_id:
+            return 0
+
+        statement = (
+            update(Startup)
+            .where(Startup.incubator_id == duplicate_id)
+            .values(incubator_id=canonical_id)
+            .execution_options(synchronize_session="fetch")
+        )
+        result = self.db.execute(statement)
+        return result.rowcount or 0
 
     def exists_by_slug(self, slug: str) -> bool:
         statement = select(exists().where(Startup.slug == slug))

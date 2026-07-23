@@ -1,6 +1,18 @@
 import json
 from datetime import datetime
-from .database import get_db_connection, log_pipeline_step
+
+from sqlalchemy.orm import Session
+
+from app.enums.entity_type import EntityType
+from app.enums.relationship import RelationshipEntityType
+from app.repositories.ai_enrichment_repository import AIEnrichmentRepository
+from app.repositories.city_repository import CityRepository
+from app.repositories.incubator_repository import IncubatorRepository
+from app.repositories.mentor_repository import MentorRepository
+from app.repositories.relationship_repository import RelationshipRepository
+from app.repositories.source_record_repository import SourceRecordRepository
+from app.repositories.startup_repository import StartupRepository
+from app.repositories.state_repository import StateRepository
 
 def get_tokens(text):
     if not text:
@@ -148,168 +160,408 @@ def merge_startup_records(canon, dupe):
     merged["last_updated"] = datetime.now().isoformat()
     return merged
 
-def run_resolution_pipeline():
-    log_pipeline_step("RESOLVE", "START", "Starting entity resolution and deduplication...")
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    try:
-        # 1. Resolve Incubators
-        cursor.execute("SELECT * FROM incubators")
-        incubators = [dict(row) for row in cursor.fetchall()]
-        
-        inc_duplicates = []
-        resolved_inc_ids = set()
-        
-        for i in range(len(incubators)):
-            for j in range(i + 1, len(incubators)):
-                inc1 = incubators[i]
-                inc2 = incubators[j]
-                
-                if inc1["id"] in resolved_inc_ids or inc2["id"] in resolved_inc_ids:
-                    continue
-                    
-                sim = calculate_similarity(inc1["name"], inc2["name"])
-                
-                # Prevent merging if they are in different cities/states or have different sources
-                city1, city2 = (inc1["city"] or "").strip().lower(), (inc2["city"] or "").strip().lower()
-                state1, state2 = (inc1["state"] or "").strip().lower(), (inc2["state"] or "").strip().lower()
-                src1, src2 = (inc1["source_url"] or "").strip().lower(), (inc2["source_url"] or "").strip().lower()
-                
-                if city1 and city2 and city1 != city2:
-                    if city1 not in city2 and city2 not in city1:
-                        sim = 0.0
-                if state1 and state2 and state1 != state2:
-                    if state1 not in state2 and state2 not in state1:
-                        sim = 0.0
-                if src1 and src2 and src1 != src2:
-                    if src1 not in src2 and src2 not in src1:
-                        sim = 0.0
-                        
-                if sim >= 0.6: # High similarity threshold
-                    # Determine canon vs duplicate: keep the one with longer/more descriptions or established year
-                    len1 = len(inc1["description"] or "") + len(inc1["phone"] or "") + len(inc1["linkedin"] or "")
-                    len2 = len(inc2["description"] or "") + len(inc2["phone"] or "") + len(inc2["linkedin"] or "")
-                    
-                    if len1 >= len2:
-                        canon, dupe = inc1, inc2
-                    else:
-                        canon, dupe = inc2, inc1
-                        
-                    inc_duplicates.append((canon, dupe))
-                    resolved_inc_ids.add(dupe["id"])
 
-        # Process incubator merges
-        for canon, dupe in inc_duplicates:
-            merged_inc = merge_incubator_records(canon, dupe)
-            
-            # Update canonical record
-            placeholders = ", ".join([f"{k} = ?" for k in merged_inc.keys() if k != "id"])
-            values = [merged_inc[k] for k in merged_inc.keys() if k != "id"]
-            values.append(merged_inc["id"])
-            cursor.execute(f"UPDATE incubators SET {placeholders} WHERE id = ?", tuple(values))
-            
-            # Re-map relationships from duplicate ID to canonical ID
-            cursor.execute("UPDATE startups SET incubator_id = ?, incubated_at = ? WHERE incubator_id = ?", (canon["id"], canon["name"], dupe["id"]))
-            cursor.execute("UPDATE mentors SET incubator_id = ? WHERE incubator_id = ?", (canon["id"], dupe["id"]))
-            
-            # Update edges in relationships table
-            cursor.execute("UPDATE relationships SET source_id = ? WHERE source_id = ? AND source_type = 'Incubator'", (canon["id"], dupe["id"]))
-            cursor.execute("UPDATE relationships SET target_id = ? WHERE target_id = ? AND target_type = 'Incubator'", (canon["id"], dupe["id"]))
-            
-            # Delete duplicate incubator
-            cursor.execute("DELETE FROM incubators WHERE id = ?", (dupe["id"],))
-            
-            # Log using the SAME transaction cursor to prevent SQLite deadlock
-            cursor.execute(
-                "INSERT INTO pipeline_logs (timestamp, stage, status, message) VALUES (?, ?, ?, ?)",
-                (datetime.now().isoformat(), "RESOLVE", "SUCCESS", f"Merged incubator duplicates: '{dupe['name']}' merged into canonical '{canon['name']}'")
+def _list_all(repository):
+    records = []
+    skip = 0
+    while batch := repository.list(skip=skip, limit=100):
+        records.extend(batch)
+        skip += len(batch)
+    return records
+
+
+def _group_source_records(source_records):
+    grouped_records = {}
+    entity_id_attributes = {
+        EntityType.INCUBATOR: "incubator_id",
+        EntityType.STARTUP: "startup_id",
+        EntityType.MENTOR: "mentor_id",
+        EntityType.INVESTOR: "investor_id",
+    }
+    for source_record in source_records:
+        entity_id = getattr(
+            source_record,
+            entity_id_attributes[source_record.entity_type],
+        )
+        if entity_id is None:
+            continue
+        grouped_records.setdefault(
+            (source_record.entity_type, entity_id),
+            [],
+        ).append(source_record)
+    return grouped_records
+
+
+def _build_incubator_record(
+    incubator,
+    source_records,
+    cities_by_id,
+    states_by_id,
+):
+    source_record = source_records[0] if source_records else None
+    raw_payload = source_record.raw_payload if source_record else {}
+    city = cities_by_id.get(incubator.city_id)
+    state = states_by_id.get(city.state_id) if city else None
+
+    return {
+        "id": incubator.id,
+        "name": incubator.name,
+        "slug": incubator.slug,
+        "description": incubator.description,
+        "city_id": incubator.city_id,
+        "organization_type": incubator.organization_type,
+        "founded_year": incubator.founded_year,
+        "is_active": incubator.is_active,
+        "phone": raw_payload.get("phone"),
+        "linkedin": (
+            raw_payload.get("linkedin")
+            or raw_payload.get("linkedin_url")
+        ),
+        "city": city.name if city else raw_payload.get("city"),
+        "state": state.name if state else raw_payload.get("state"),
+        "source_url": (
+            source_record.source_url
+            if source_record
+            else raw_payload.get("source_url")
+        ),
+        "focus_areas": (
+            raw_payload.get("focus_areas")
+            or raw_payload.get("sector")
+        ),
+        "incubation_programs": raw_payload.get("incubation_programs"),
+        "lab_facilities": raw_payload.get("lab_facilities"),
+        "confidence_score": raw_payload.get("confidence_score") or 0.0,
+        "status": raw_payload.get("status") or "cleaned",
+        "last_updated": incubator.updated_at.isoformat(),
+    }
+
+
+def _build_startup_record(startup, source_records):
+    source_record = source_records[0] if source_records else None
+    raw_payload = source_record.raw_payload if source_record else {}
+
+    return {
+        "id": startup.id,
+        "startup_name": startup.name,
+        "name": startup.name,
+        "slug": startup.slug,
+        "incubator_id": startup.incubator_id,
+        "description": startup.description,
+        "founded_year": startup.founded_year,
+        "funding_stage": startup.funding_stage,
+        "website": startup.website,
+        "is_active": startup.is_active,
+        "sector": raw_payload.get("sector"),
+        "confidence_score": raw_payload.get("confidence_score") or 0.0,
+        "status": raw_payload.get("status") or "cleaned",
+        "last_updated": startup.updated_at.isoformat(),
+    }
+
+
+def _find_incubator_duplicates(incubators):
+    inc_duplicates = []
+    resolved_inc_ids = set()
+
+    for i in range(len(incubators)):
+        for j in range(i + 1, len(incubators)):
+            inc1 = incubators[i]
+            inc2 = incubators[j]
+
+            if (
+                inc1["id"] in resolved_inc_ids
+                or inc2["id"] in resolved_inc_ids
+            ):
+                continue
+
+            sim = calculate_similarity(inc1["name"], inc2["name"])
+
+            city1 = (inc1["city"] or "").strip().lower()
+            city2 = (inc2["city"] or "").strip().lower()
+            state1 = (inc1["state"] or "").strip().lower()
+            state2 = (inc2["state"] or "").strip().lower()
+            src1 = (inc1["source_url"] or "").strip().lower()
+            src2 = (inc2["source_url"] or "").strip().lower()
+
+            if city1 and city2 and city1 != city2:
+                if city1 not in city2 and city2 not in city1:
+                    sim = 0.0
+            if state1 and state2 and state1 != state2:
+                if state1 not in state2 and state2 not in state1:
+                    sim = 0.0
+            if src1 and src2 and src1 != src2:
+                if src1 not in src2 and src2 not in src1:
+                    sim = 0.0
+
+            if sim >= 0.6:
+                len1 = (
+                    len(inc1["description"] or "")
+                    + len(inc1["phone"] or "")
+                    + len(inc1["linkedin"] or "")
+                )
+                len2 = (
+                    len(inc2["description"] or "")
+                    + len(inc2["phone"] or "")
+                    + len(inc2["linkedin"] or "")
+                )
+
+                if len1 >= len2:
+                    canon, dupe = inc1, inc2
+                else:
+                    canon, dupe = inc2, inc1
+
+                inc_duplicates.append((canon, dupe))
+                resolved_inc_ids.add(dupe["id"])
+
+    return inc_duplicates
+
+
+def _find_startup_duplicates(startups):
+    start_duplicates = []
+    resolved_start_ids = set()
+
+    for i in range(len(startups)):
+        for j in range(i + 1, len(startups)):
+            s1 = startups[i]
+            s2 = startups[j]
+
+            if (
+                s1["id"] in resolved_start_ids
+                or s2["id"] in resolved_start_ids
+            ):
+                continue
+
+            sim = calculate_similarity(
+                s1["startup_name"],
+                s2["startup_name"],
+            )
+            if sim >= 0.7:
+                len1 = len(s1["website"] or "") + len(s1["sector"] or "")
+                len2 = len(s2["website"] or "") + len(s2["sector"] or "")
+
+                if len1 >= len2:
+                    canon, dupe = s1, s2
+                else:
+                    canon, dupe = s2, s1
+
+                start_duplicates.append((canon, dupe))
+                resolved_start_ids.add(dupe["id"])
+
+    return start_duplicates
+
+
+def _resolve_final_id(entity_id, direct_mapping):
+    visited = set()
+    while entity_id in direct_mapping:
+        if entity_id in visited:
+            raise ValueError("Circular duplicate mapping detected")
+        visited.add(entity_id)
+        entity_id = direct_mapping[entity_id]
+    return entity_id
+
+
+def _build_merge_plans(records, duplicate_pairs, merge_records):
+    working_records = {
+        record["id"]: dict(record)
+        for record in records
+    }
+    direct_mapping = {}
+
+    for canon, dupe in duplicate_pairs:
+        canonical_id = canon["id"]
+        duplicate_id = dupe["id"]
+        direct_mapping[duplicate_id] = canonical_id
+        working_records[canonical_id] = merge_records(
+            working_records[canonical_id],
+            working_records[duplicate_id],
+        )
+
+    final_mapping = {
+        duplicate_id: _resolve_final_id(duplicate_id, direct_mapping)
+        for duplicate_id in direct_mapping
+    }
+    duplicate_groups = {}
+    for duplicate_id, canonical_id in final_mapping.items():
+        duplicate_groups.setdefault(canonical_id, []).append(duplicate_id)
+
+    plans = [
+        {
+            "canonical_id": canonical_id,
+            "duplicate_ids": duplicate_ids,
+            "merged_record": working_records[canonical_id],
+        }
+        for canonical_id, duplicate_ids in duplicate_groups.items()
+    ]
+    return plans, final_mapping
+
+
+def _apply_incubator_merge(incubator, merged_record):
+    incubator.name = merged_record["name"]
+    incubator.slug = merged_record["slug"]
+    incubator.description = merged_record["description"]
+    incubator.city_id = merged_record["city_id"]
+    incubator.organization_type = merged_record["organization_type"]
+    incubator.founded_year = merged_record["founded_year"]
+    incubator.is_active = merged_record["is_active"]
+
+
+def _apply_startup_merge(startup, merged_record, incubator_mapping):
+    incubator_id = merged_record["incubator_id"]
+    startup.incubator_id = incubator_mapping.get(
+        incubator_id,
+        incubator_id,
+    )
+    startup.name = merged_record["name"]
+    startup.slug = merged_record["slug"]
+    startup.description = merged_record["description"]
+    startup.founded_year = merged_record["founded_year"]
+    startup.funding_stage = merged_record["funding_stage"]
+    startup.website = merged_record["website"]
+    startup.is_active = merged_record["is_active"]
+
+
+def run_resolution_pipeline(db: Session):
+    incubator_repository = IncubatorRepository(db)
+    startup_repository = StartupRepository(db)
+    mentor_repository = MentorRepository(db)
+    source_record_repository = SourceRecordRepository(db)
+    ai_enrichment_repository = AIEnrichmentRepository(db)
+    relationship_repository = RelationshipRepository(db)
+    city_repository = CityRepository(db)
+    state_repository = StateRepository(db)
+
+    incubator_entities = _list_all(incubator_repository)
+    startup_entities = _list_all(startup_repository)
+    source_records = _list_all(source_record_repository)
+    cities = _list_all(city_repository)
+    states = _list_all(state_repository)
+
+    source_records_by_entity = _group_source_records(source_records)
+    cities_by_id = {city.id: city for city in cities}
+    states_by_id = {state.id: state for state in states}
+
+    incubator_records = [
+        _build_incubator_record(
+            incubator,
+            source_records_by_entity.get(
+                (EntityType.INCUBATOR, incubator.id),
+                [],
+            ),
+            cities_by_id,
+            states_by_id,
+        )
+        for incubator in incubator_entities
+    ]
+    startup_records = [
+        _build_startup_record(
+            startup,
+            source_records_by_entity.get(
+                (EntityType.STARTUP, startup.id),
+                [],
+            ),
+        )
+        for startup in startup_entities
+    ]
+
+    inc_duplicates = _find_incubator_duplicates(incubator_records)
+    start_duplicates = _find_startup_duplicates(startup_records)
+    incubator_plans, incubator_mapping = _build_merge_plans(
+        incubator_records,
+        inc_duplicates,
+        merge_incubator_records,
+    )
+    startup_plans, _ = _build_merge_plans(
+        startup_records,
+        start_duplicates,
+        merge_startup_records,
+    )
+
+    incubators_by_id = {
+        incubator.id: incubator
+        for incubator in incubator_entities
+    }
+    startups_by_id = {
+        startup.id: startup
+        for startup in startup_entities
+    }
+
+    for plan in incubator_plans:
+        canonical = incubators_by_id[plan["canonical_id"]]
+        _apply_incubator_merge(canonical, plan["merged_record"])
+        incubator_repository.update(canonical)
+
+    for plan in incubator_plans:
+        canonical_id = plan["canonical_id"]
+        for duplicate_id in plan["duplicate_ids"]:
+            startup_repository.reassign_incubator(
+                duplicate_id,
+                canonical_id,
+            )
+            mentor_repository.reassign_incubator(
+                duplicate_id,
+                canonical_id,
+            )
+            source_record_repository.reassign_incubator(
+                duplicate_id,
+                canonical_id,
+            )
+            ai_enrichment_repository.reassign_incubator(
+                duplicate_id,
+                canonical_id,
+            )
+            relationship_repository.reassign_source(
+                RelationshipEntityType.INCUBATOR,
+                duplicate_id,
+                canonical_id,
+            )
+            relationship_repository.reassign_target(
+                RelationshipEntityType.INCUBATOR,
+                duplicate_id,
+                canonical_id,
             )
 
-        # 2. Resolve Startups
-        cursor.execute("SELECT * FROM startups")
-        startups = [dict(row) for row in cursor.fetchall()]
-        
-        start_duplicates = []
-        resolved_start_ids = set()
-        
-        for i in range(len(startups)):
-            for j in range(i + 1, len(startups)):
-                s1 = startups[i]
-                s2 = startups[j]
-                
-                if s1["id"] in resolved_start_ids or s2["id"] in resolved_start_ids:
-                    continue
-                    
-                sim = calculate_similarity(s1["startup_name"], s2["startup_name"])
-                if sim >= 0.7:
-                    # Determine canon vs duplicate
-                    len1 = len(s1["website"] or "") + len(s1["sector"] or "")
-                    len2 = len(s2["website"] or "") + len(s2["sector"] or "")
-                    
-                    if len1 >= len2:
-                        canon, dupe = s1, s2
-                    else:
-                        canon, dupe = s2, s1
-                        
-                    start_duplicates.append((canon, dupe))
-                    resolved_start_ids.add(dupe["id"])
-                    
-        # Process startup merges
-        for canon, dupe in start_duplicates:
-            merged_start = merge_startup_records(canon, dupe)
-            
-            placeholders = ", ".join([f"{k} = ?" for k in merged_start.keys() if k != "id"])
-            values = [merged_start[k] for k in merged_start.keys() if k != "id"]
-            values.append(merged_start["id"])
-            cursor.execute(f"UPDATE startups SET {placeholders} WHERE id = ?", tuple(values))
-            
-            # Update edges in relationships table
-            cursor.execute("UPDATE relationships SET source_id = ? WHERE source_id = ? AND source_type = 'Startup'", (canon["id"], dupe["id"]))
-            cursor.execute("UPDATE relationships SET target_id = ? WHERE target_id = ? AND target_type = 'Startup'", (canon["id"], dupe["id"]))
-            
-            # Delete duplicate startup
-            cursor.execute("DELETE FROM startups WHERE id = ?", (dupe["id"],))
-            
-            # Log using the SAME transaction cursor to prevent SQLite deadlock
-            cursor.execute(
-                "INSERT INTO pipeline_logs (timestamp, stage, status, message) VALUES (?, ?, ?, ?)",
-                (datetime.now().isoformat(), "RESOLVE", "SUCCESS", f"Merged startup duplicates: '{dupe['startup_name']}' merged into canonical '{canon['startup_name']}'")
+    for plan in incubator_plans:
+        for duplicate_id in plan["duplicate_ids"]:
+            incubator_repository.delete(incubators_by_id[duplicate_id])
+
+    for plan in startup_plans:
+        canonical = startups_by_id[plan["canonical_id"]]
+        _apply_startup_merge(
+            canonical,
+            plan["merged_record"],
+            incubator_mapping,
+        )
+        startup_repository.update(canonical)
+
+    for plan in startup_plans:
+        canonical_id = plan["canonical_id"]
+        for duplicate_id in plan["duplicate_ids"]:
+            source_record_repository.reassign_startup(
+                duplicate_id,
+                canonical_id,
+            )
+            ai_enrichment_repository.reassign_startup(
+                duplicate_id,
+                canonical_id,
+            )
+            relationship_repository.reassign_source(
+                RelationshipEntityType.STARTUP,
+                duplicate_id,
+                canonical_id,
+            )
+            relationship_repository.reassign_target(
+                RelationshipEntityType.STARTUP,
+                duplicate_id,
+                canonical_id,
             )
 
-        # 3. Clean up any duplicate edges resulting from merges (e.g. multiple FUNDED edges between same Investor and Startup)
-        cursor.execute('''
-            DELETE FROM relationships
-            WHERE id NOT IN (
-                SELECT MIN(id)
-                FROM relationships
-                GROUP BY source_id, source_type, target_id, target_type, relationship_type
-            )
-        ''')
+    for plan in startup_plans:
+        for duplicate_id in plan["duplicate_ids"]:
+            startup_repository.delete(startups_by_id[duplicate_id])
 
-        # 4. Mark all remaining clean entries as resolved
-        cursor.execute("UPDATE incubators SET status = 'resolved' WHERE status = 'cleaned'")
-        cursor.execute("UPDATE startups SET status = 'resolved' WHERE status = 'cleaned'")
-        
-        # 5. Compute incubator stats (startup count & active startup count)
-        cursor.execute("SELECT id, name FROM incubators")
-        incs = cursor.fetchall()
-        for inc in incs:
-            inc_id = inc[0]
-            cursor.execute("SELECT COUNT(*) FROM startups WHERE incubator_id = ?", (inc_id,))
-            total_count = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT COUNT(*) FROM startups WHERE incubator_id = ? AND funding_stage != 'Dead' AND funding_stage != 'Closed'", (inc_id,))
-            active_count = cursor.fetchone()[0]
-            
-            cursor.execute("UPDATE incubators SET startup_count = ?, active_startups = ? WHERE id = ?", (total_count, active_count, inc_id))
+    relationship_repository.deduplicate_edges()
 
-        conn.commit()
-        log_pipeline_step("RESOLVE", "SUCCESS", f"Entity Resolution completed. Resolved {len(inc_duplicates)} incubator duplicate sets, {len(start_duplicates)} startup duplicate sets, and updated all relationship linkages.")
-        return {"status": "success", "merged_incubators": len(inc_duplicates), "merged_startups": len(start_duplicates)}
-    except Exception as e:
-        conn.rollback()
-        log_pipeline_step("RESOLVE", "ERROR", f"Error during entity resolution: {str(e)}")
-        raise e
-    finally:
-        conn.close()
+    return {
+        "status": "success",
+        "merged_incubators": len(inc_duplicates),
+        "merged_startups": len(start_duplicates),
+    }

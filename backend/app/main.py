@@ -2,6 +2,7 @@ import os
 import json
 import zipfile
 import io
+from datetime import datetime
 from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
@@ -14,7 +15,13 @@ from pydantic import BaseModel
 from typing import Optional, List
 
 from .database import get_db_connection, get_pipeline_logs, log_pipeline_step, clear_all_tables
-from .db.session import get_db
+from .db.session import SessionLocal, get_db
+from .models.outreach_lead import OutreachLead
+from .models.scheduled_meeting import ScheduledMeeting
+from .repositories.outreach_lead_repository import OutreachLeadRepository
+from .repositories.scheduled_meeting_repository import (
+    ScheduledMeetingRepository,
+)
 from .scraper import run_scraper_pipeline
 from .cleaner import run_cleaner_pipeline
 from .resolution import run_resolution_pipeline
@@ -64,13 +71,71 @@ class PipelineRunResponse(BaseModel):
     message: str
     details: Optional[dict] = None
 
+
+def serialize_legacy_datetime(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is not None:
+        value = value.astimezone().replace(tzinfo=None)
+    return value.isoformat()
+
+
+def serialize_outreach_lead(lead: OutreachLead) -> dict:
+    return {
+        "id": lead.id,
+        "incubator_id": lead.incubator_id,
+        "incubator_name": lead.incubator_name,
+        "email": lead.email,
+        "status": lead.status,
+        "sent_at": serialize_legacy_datetime(lead.sent_at),
+        "reply_text": lead.reply_text,
+        "reply_detected_at": serialize_legacy_datetime(
+            lead.reply_detected_at
+        ),
+        "intent_classification": lead.intent_classification,
+        "lead_score": lead.lead_score,
+        "meeting_link": lead.meeting_link,
+        "meeting_scheduled_at": lead.meeting_scheduled_at,
+        "notes": lead.notes,
+        "next_action_date": lead.next_action_date,
+        "contact_count": lead.contact_count,
+        "last_contact_reason": lead.last_contact_reason,
+        "followup_count": lead.followup_count,
+        "last_followup_at": serialize_legacy_datetime(
+            lead.last_followup_at
+        ),
+        "reply_sentiment": lead.reply_sentiment,
+        "reply_urgency": lead.reply_urgency,
+        "reply_reason": lead.reply_reason,
+    }
+
+
+def serialize_scheduled_meeting(meeting: ScheduledMeeting) -> dict:
+    return {
+        "id": meeting.id,
+        "lead_id": meeting.lead_id,
+        "incubator_name": meeting.incubator_name,
+        "title": meeting.title,
+        "date": meeting.date,
+        "time": meeting.time,
+        "calendar_event_id": meeting.calendar_event_id,
+        "status": meeting.status,
+        "meeting_link": meeting.lead.meeting_link,
+        "incubator_id": meeting.lead.incubator_id,
+    }
+
+
 @app.post("/api/pipeline/reset", response_model=PipelineRunResponse)
-def reset_pipeline():
+def reset_pipeline(db: Session = Depends(get_db)):
     try:
+        ScheduledMeetingRepository(db).delete_all()
+        OutreachLeadRepository(db).delete_all()
         clear_all_tables()
         log_pipeline_step("SYSTEM", "SUCCESS", "Ecosystem database tables reset successfully.")
+        db.commit()
         return PipelineRunResponse(status="success", message="Ecosystem database cleared.")
     except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/pipeline/run", response_model=PipelineRunResponse)
@@ -383,7 +448,10 @@ class MouSendRequest(BaseModel):
     recipient_email: str
 
 @app.post("/api/mou/send")
-def send_mou_email(req: MouSendRequest):
+def send_mou_email(
+    req: MouSendRequest,
+    db: Session = Depends(get_db),
+):
     import base64
     import smtplib
     from email.mime.multipart import MIMEMultipart
@@ -468,27 +536,34 @@ def send_mou_email(req: MouSendRequest):
 
     # Register the MOU recipient as a lead in outreach_leads
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id FROM outreach_leads WHERE email = ?", (req.recipient_email,))
-        row = cursor.fetchone()
-        if row:
-            lead_id = row["id"]
-            cursor.execute(
-                "UPDATE outreach_leads SET status = 'Sent', sent_at = ?, reply_text = NULL, reply_detected_at = NULL, intent_classification = NULL, lead_score = 0, meeting_link = NULL, meeting_scheduled_at = NULL WHERE id = ?",
-                (datetime.now().isoformat(), lead_id)
-            )
+        outreach_repository = OutreachLeadRepository(db)
+        lead = outreach_repository.get_by_email(req.recipient_email)
+        if lead:
+            lead.status = "Sent"
+            lead.sent_at = datetime.now().astimezone()
+            lead.reply_text = None
+            lead.reply_detected_at = None
+            lead.intent_classification = None
+            lead.lead_score = 0
+            lead.meeting_link = None
+            lead.meeting_scheduled_at = None
+            outreach_repository.update(lead)
         else:
             import uuid
-            lead_id = f"lead_{uuid.uuid4().hex[:8]}"
-            cursor.execute('''
-                INSERT INTO outreach_leads (
-                    id, incubator_id, incubator_name, email, status, sent_at, lead_score
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (lead_id, "inc_mou_" + uuid.uuid4().hex[:4], req.incubator_name, req.recipient_email, "Sent", datetime.now().isoformat(), 0))
-        conn.commit()
-        conn.close()
+            outreach_repository.create(
+                OutreachLead(
+                    id=f"lead_{uuid.uuid4().hex[:8]}",
+                    incubator_id="inc_mou_" + uuid.uuid4().hex[:4],
+                    incubator_name=req.incubator_name,
+                    email=req.recipient_email,
+                    status="Sent",
+                    sent_at=datetime.now().astimezone(),
+                    lead_score=0,
+                )
+            )
+        db.commit()
     except Exception as db_err:
+        db.rollback()
         print("Error registering sent MOU as outreach lead:", db_err)
 
     # Helper check to see if SMTP is fully configured (not using default placeholders)
@@ -1247,181 +1322,158 @@ class UpdateLeadNotesRequest(BaseModel):
     notes: str
     next_action_date: Optional[str] = ""
 
-def seed_outreach_leads():
-    import uuid
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Ensure trial incubator exists in incubators table
-    cursor.execute("SELECT COUNT(*) FROM incubators WHERE id = 'inc_trial_rugved'")
-    if cursor.fetchone()[0] == 0:
-        cursor.execute('''
-            INSERT INTO incubators (
-                id, name, email, city, state, organization_type, confidence_score, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            "inc_trial_rugved",
-            "Trial Incubator (kadurugved0)",
-            "kadurugved0@gmail.com",
-            "Nagpur",
-            "Maharashtra",
-            "Academic Collab Partner",
-            1.0,
-            "resolved"
-        ))
-        conn.commit()
+def seed_outreach_leads(db: Session):
+    outreach_repository = OutreachLeadRepository(db)
 
-    # Ensure trial2 incubator exists in incubators table
-    cursor.execute("SELECT COUNT(*) FROM incubators WHERE id = 'inc_trial_rugved2'")
-    if cursor.fetchone()[0] == 0:
-        cursor.execute('''
-            INSERT INTO incubators (
-                id, name, email, city, state, organization_type, confidence_score, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            "inc_trial_rugved2",
-            "Trial Incubator (trial2)",
-            "rugveddevmain@gmail.com",
-            "Nagpur",
-            "Maharashtra",
-            "Academic Collab Partner",
-            1.0,
-            "resolved"
-        ))
-        conn.commit()
+    if not outreach_repository.exists_by_email("kadurugved0@gmail.com"):
+        outreach_repository.create(
+            OutreachLead(
+                id="lead_trial_rugved",
+                incubator_id="inc_trial_rugved",
+                incubator_name="Trial Incubator (kadurugved0)",
+                email="kadurugved0@gmail.com",
+                status="Draft",
+                lead_score=0,
+            )
+        )
 
-    # Ensure trial lead exists in outreach_leads
-    cursor.execute("SELECT COUNT(*) FROM outreach_leads WHERE email = 'kadurugved0@gmail.com'")
-    if cursor.fetchone()[0] == 0:
-        cursor.execute('''
-            INSERT INTO outreach_leads (
-                id, incubator_id, incubator_name, email, status, lead_score
-            ) VALUES (?, ?, ?, ?, ?, ?)
-        ''', ("lead_trial_rugved", "inc_trial_rugved", "Trial Incubator (kadurugved0)", "kadurugved0@gmail.com", "Draft", 0))
-        conn.commit()
-
-    # Ensure trial2 lead exists in outreach_leads
-    cursor.execute("SELECT COUNT(*) FROM outreach_leads WHERE email = 'rugveddevmain@gmail.com'")
-    if cursor.fetchone()[0] == 0:
-        cursor.execute('''
-            INSERT INTO outreach_leads (
-                id, incubator_id, incubator_name, email, status, lead_score
-            ) VALUES (?, ?, ?, ?, ?, ?)
-        ''', ("lead_trial_rugved2", "inc_trial_rugved2", "Trial Incubator (trial2)", "rugveddevmain@gmail.com", "Draft", 0))
-        conn.commit()
-
-    # Check if leads exist
-    cursor.execute("SELECT COUNT(*) FROM outreach_leads")
-    count = cursor.fetchone()[0]
-    if count > 1:
-        conn.close()
-        return
-        
-    # Fetch some incubators (prioritizing Nagpur University / IncubIMN)
-    cursor.execute("SELECT id, name, email FROM incubators WHERE id != 'inc_trial_rudveg' ORDER BY CASE WHEN name LIKE '%IncubIMN%' THEN 0 ELSE 1 END, name LIMIT 5")
-    incubators = cursor.fetchall()
-    
-    for inc in incubators:
-        inc_id = inc[0]
-        inc_name = inc[1]
-        inc_email = inc[2] or f"contact@{inc_name.lower().replace(' ', '').replace(',', '').replace('(', '').replace(')', '')}.org"
-        
-        cursor.execute("SELECT COUNT(*) FROM outreach_leads WHERE email = ?", (inc_email,))
-        if cursor.fetchone()[0] == 0:
-            lead_id = f"lead_{uuid.uuid4().hex[:8]}"
-            cursor.execute('''
-                INSERT INTO outreach_leads (
-                    id, incubator_id, incubator_name, email, status, lead_score, contact_count, last_contact_reason, next_action_date
-                ) VALUES (?, ?, ?, ?, ?, ?, 0, 'None', '')
-            ''', (lead_id, inc_id, inc_name, inc_email, "Draft", 0))
-        
-    conn.commit()
-    conn.close()
+    if not outreach_repository.exists_by_email("rugveddevmain@gmail.com"):
+        outreach_repository.create(
+            OutreachLead(
+                id="lead_trial_rugved2",
+                incubator_id="inc_trial_rugved2",
+                incubator_name="Trial Incubator (trial2)",
+                email="rugveddevmain@gmail.com",
+                status="Draft",
+                lead_score=0,
+            )
+        )
 
 @app.get("/api/outreach/leads")
-def get_outreach_leads():
-    seed_outreach_leads()
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM outreach_leads")
-    rows = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return rows
+def get_outreach_leads(db: Session = Depends(get_db)):
+    try:
+        seed_outreach_leads(db)
+        rows = OutreachLeadRepository(db).list_all()
+        response = [serialize_outreach_lead(row) for row in rows]
+        db.commit()
+        return response
+    except Exception:
+        db.rollback()
+        raise
 
 @app.post("/api/outreach/add-lead")
-def add_outreach_lead(req: AddLeadRequest):
+def add_outreach_lead(
+    req: AddLeadRequest,
+    db: Session = Depends(get_db),
+):
     import uuid
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Check if already exists in campaign
-    cursor.execute("SELECT COUNT(*) FROM outreach_leads WHERE incubator_id = ? OR email = ?", (req.incubator_id, req.email))
-    if cursor.fetchone()[0] > 0:
-        conn.close()
-        return {"status": "exists", "message": "Lead already exists in campaign leads."}
-        
-    lead_id = f"lead_{uuid.uuid4().hex[:8]}"
-    cursor.execute('''
-        INSERT INTO outreach_leads (id, incubator_id, incubator_name, email, status, lead_score, contact_count, last_contact_reason, next_action_date)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (lead_id, req.incubator_id, req.incubator_name, req.email, 'Draft', 0, 0, 'None', ''))
-    
-    conn.commit()
-    conn.close()
-    return {"status": "success", "message": f"Successfully added {req.incubator_name} to campaigns.", "lead_id": lead_id}
+    try:
+        repository = OutreachLeadRepository(db)
+        if repository.exists_by_incubator_or_email(
+            req.incubator_id,
+            req.email,
+        ):
+            db.commit()
+            return {
+                "status": "exists",
+                "message": "Lead already exists in campaign leads.",
+            }
+
+        lead_id = f"lead_{uuid.uuid4().hex[:8]}"
+        repository.create(
+            OutreachLead(
+                id=lead_id,
+                incubator_id=req.incubator_id,
+                incubator_name=req.incubator_name,
+                email=req.email,
+                status="Draft",
+                lead_score=0,
+                contact_count=0,
+                last_contact_reason="None",
+                next_action_date="",
+            )
+        )
+        db.commit()
+        return {
+            "status": "success",
+            "message": (
+                f"Successfully added {req.incubator_name} to campaigns."
+            ),
+            "lead_id": lead_id,
+        }
+    except Exception:
+        db.rollback()
+        raise
 
 @app.post("/api/outreach/reset")
-def reset_outreach():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM scheduled_meetings")
-    cursor.execute("DELETE FROM outreach_leads")
-    conn.commit()
-    conn.close()
-    seed_outreach_leads()
-    return {"status": "success", "message": "Campaign data successfully reset."}
+def reset_outreach(db: Session = Depends(get_db)):
+    try:
+        ScheduledMeetingRepository(db).delete_all()
+        OutreachLeadRepository(db).delete_all()
+        seed_outreach_leads(db)
+        db.commit()
+        return {
+            "status": "success",
+            "message": "Campaign data successfully reset.",
+        }
+    except Exception:
+        db.rollback()
+        raise
 
 @app.post("/api/outreach/leads/update-status")
-def update_lead_status(req: UpdateLeadStatusRequest):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM outreach_leads WHERE id = ?", (req.lead_id,))
-    lead = cursor.fetchone()
-    if not lead:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Lead not found")
-    cursor.execute("UPDATE outreach_leads SET status = ? WHERE id = ?", (req.status, req.lead_id))
-    conn.commit()
-    conn.close()
-    return {"status": "success", "message": f"Campaign lead status updated to {req.status}."}
+def update_lead_status(
+    req: UpdateLeadStatusRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        repository = OutreachLeadRepository(db)
+        lead = repository.get_by_id(req.lead_id)
+        if not lead:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        lead.status = req.status
+        repository.update(lead)
+        db.commit()
+        return {
+            "status": "success",
+            "message": (
+                f"Campaign lead status updated to {req.status}."
+            ),
+        }
+    except Exception:
+        db.rollback()
+        raise
 
 @app.post("/api/outreach/leads/update-notes")
-def update_lead_notes(req: UpdateLeadNotesRequest):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM outreach_leads WHERE id = ?", (req.lead_id,))
-    lead = cursor.fetchone()
-    if not lead:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Lead not found")
-    if req.next_action_date is not None:
-        cursor.execute("UPDATE outreach_leads SET notes = ?, next_action_date = ? WHERE id = ?", (req.notes, req.next_action_date, req.lead_id))
-    else:
-        cursor.execute("UPDATE outreach_leads SET notes = ? WHERE id = ?", (req.notes, req.lead_id))
-    conn.commit()
-    conn.close()
-    return {"status": "success", "message": "Campaign lead notes updated successfully."}
+def update_lead_notes(
+    req: UpdateLeadNotesRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        repository = OutreachLeadRepository(db)
+        lead = repository.get_by_id(req.lead_id)
+        if not lead:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        lead.notes = req.notes
+        if req.next_action_date is not None:
+            lead.next_action_date = req.next_action_date
+        repository.update(lead)
+        db.commit()
+        return {
+            "status": "success",
+            "message": "Campaign lead notes updated successfully.",
+        }
+    except Exception:
+        db.rollback()
+        raise
 
 @app.post("/api/outreach/send-email")
-def trigger_outreach_email(req: OutreachEmailRequest):
-    from datetime import datetime
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT * FROM outreach_leads WHERE id = ?", (req.lead_id,))
-    lead = cursor.fetchone()
+def trigger_outreach_email(
+    req: OutreachEmailRequest,
+    db: Session = Depends(get_db),
+):
+    repository = OutreachLeadRepository(db)
+    lead = repository.get_by_id(req.lead_id)
     if not lead:
-        conn.close()
         raise HTTPException(status_code=404, detail="Lead not found")
         
     # Send a real outreach invite email if SMTP is configured
@@ -1443,7 +1495,7 @@ def trigger_outreach_email(req: OutreachEmailRequest):
             msg = MIMEMultipart("alternative")
             msg["Subject"] = req.subject or f"Academic Partnership Opportunity - Incubein Innovation Ecosystem"
             msg["From"] = sender_email
-            msg["To"] = lead["email"]
+            msg["To"] = lead.email
             
             body_text = req.body or f"""
 Dear Representative,
@@ -1466,22 +1518,43 @@ Incubein Foundation Admin
                 server = smtplib.SMTP(smtp_host, port, timeout=10)
                 server.starttls()
             server.login(smtp_user, smtp_pass)
-            server.sendmail(sender_email, [lead["email"]], msg.as_string())
+            server.sendmail(sender_email, [lead.email], msg.as_string())
             server.quit()
             email_sent_successfully = True
         except Exception as e:
             print("Error sending outreach email via SMTP:", e)
             
-    cursor.execute(
-        "UPDATE outreach_leads SET status = 'Sent', sent_at = ?, contact_count = coalesce(contact_count, 0) + 1, last_contact_reason = ? WHERE id = ?",
-        (datetime.now().isoformat(), req.subject or "Outreach Email", req.lead_id)
-    )
-    conn.commit()
-    conn.close()
-    msg_status = "Real email sent via SMTP" if email_sent_successfully else "SMTP not configured, simulated sending"
-    return {"status": "success", "message": f"Outreach email campaign successfully triggered for {lead['incubator_name']} ({msg_status})."}
+    try:
+        lead.status = "Sent"
+        lead.sent_at = datetime.now().astimezone()
+        lead.contact_count = (lead.contact_count or 0) + 1
+        lead.last_contact_reason = req.subject or "Outreach Email"
+        repository.update(lead)
+        db.commit()
+        msg_status = (
+            "Real email sent via SMTP"
+            if email_sent_successfully
+            else "SMTP not configured, simulated sending"
+        )
+        return {
+            "status": "success",
+            "message": (
+                "Outreach email campaign successfully triggered for "
+                f"{lead.incubator_name} ({msg_status})."
+            ),
+        }
+    except Exception:
+        db.rollback()
+        raise
 
-def send_followup_email(lead_id: str, lead_name: str, lead_email: str, followup_number: int):
+
+def send_followup_email(
+    db: Session,
+    lead_id: str,
+    lead_name: str,
+    lead_email: str,
+    followup_number: int,
+):
     import smtplib
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
@@ -1504,13 +1577,10 @@ def send_followup_email(lead_id: str, lead_name: str, lead_email: str, followup_
     is_smtp_ready = smtp_host and smtp_user and smtp_pass and "your_email" not in smtp_user
     email_sent_successfully = False
     
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT incubator_id FROM outreach_leads WHERE id = ?", (lead_id,))
-    lead_row = cursor.fetchone()
-    conn.close()
+    repository = OutreachLeadRepository(db)
+    lead = repository.get_by_id(lead_id)
 
-    if lead_row and lead_row["incubator_id"] == "incubein_cohort":
+    if lead and lead.incubator_id == "incubein_cohort":
         subject = f"Following up: INCUBEIN Cohort - {lead_name} (Follow-up #{followup_number})"
         body_text = f"""Dear Founder,
 
@@ -1563,18 +1633,11 @@ Incubein Foundation Admin
         except Exception as e:
             print(f"Error sending follow-up email via SMTP to {lead_email}: {e}")
             
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        UPDATE outreach_leads 
-        SET status = 'Follow-up Sent', 
-            followup_count = ?, 
-            last_followup_at = ? 
-        WHERE id = ?
-    ''', (followup_number, datetime.now().isoformat(), lead_id))
-    conn.commit()
-    conn.close()
+    if lead:
+        lead.status = "Follow-up Sent"
+        lead.followup_count = followup_number
+        lead.last_followup_at = datetime.now().astimezone()
+        repository.update(lead)
     
     return email_sent_successfully
 
@@ -1582,114 +1645,144 @@ class FollowupEmailRequest(BaseModel):
     lead_id: str
 
 @app.post("/api/outreach/send-followup-single")
-def api_send_followup_single(req: FollowupEmailRequest):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM outreach_leads WHERE id = ?", (req.lead_id,))
-    lead = cursor.fetchone()
-    if not lead:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Lead not found")
-    
-    lead = dict(lead)
-    current_count = lead.get("followup_count", 0) or 0
-    
-    if lead["status"] not in ["Sent", "Follow-up Sent"]:
-        conn.close()
-        raise HTTPException(status_code=400, detail=f"Lead status is '{lead['status']}'. Can only follow up on Sent or Follow-up Sent leads.")
-        
-    next_count = current_count + 1
-    if next_count > 2:
-        conn.close()
-        raise HTTPException(status_code=400, detail="Maximum follow-ups (2) already reached for this lead.")
-        
-    conn.close()
-    
-    email_sent = send_followup_email(lead["id"], lead["incubator_name"], lead["email"], next_count)
-    msg_status = "Real email sent via SMTP" if email_sent else "SMTP not configured, simulated sending"
-    
-    return {
-        "status": "success", 
-        "message": f"Follow-up #{next_count} successfully triggered for {lead['incubator_name']} ({msg_status}).",
-        "followup_count": next_count
-    }
+def api_send_followup_single(
+    req: FollowupEmailRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        lead = OutreachLeadRepository(db).get_by_id(req.lead_id)
+        if not lead:
+            raise HTTPException(status_code=404, detail="Lead not found")
+
+        current_count = lead.followup_count or 0
+        if lead.status not in ["Sent", "Follow-up Sent"]:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Lead status is '{lead.status}'. Can only follow up on "
+                    "Sent or Follow-up Sent leads."
+                ),
+            )
+
+        next_count = current_count + 1
+        if next_count > 2:
+            raise HTTPException(
+                status_code=400,
+                detail="Maximum follow-ups (2) already reached for this lead.",
+            )
+
+        email_sent = send_followup_email(
+            db,
+            lead.id,
+            lead.incubator_name,
+            lead.email,
+            next_count,
+        )
+        db.commit()
+        msg_status = (
+            "Real email sent via SMTP"
+            if email_sent
+            else "SMTP not configured, simulated sending"
+        )
+
+        return {
+            "status": "success",
+            "message": (
+                f"Follow-up #{next_count} successfully triggered for "
+                f"{lead.incubator_name} ({msg_status})."
+            ),
+            "followup_count": next_count,
+        }
+    except Exception:
+        db.rollback()
+        raise
 
 @app.post("/api/outreach/send-followups")
-def api_send_followups():
-    from datetime import datetime
+def api_send_followups(db: Session = Depends(get_db)):
     global FOLLOWUP_DELAY
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT * FROM outreach_leads WHERE status IN ('Sent', 'Follow-up Sent')")
-    leads = [dict(row) for row in cursor.fetchall()]
-    
-    dispatched = []
-    now = datetime.now()
-    
-    for lead in leads:
-        last_time_str = lead.get("last_followup_at") or lead.get("sent_at")
-        if not last_time_str:
-            continue
-            
-        try:
-            last_time = datetime.fromisoformat(last_time_str)
-            elapsed_seconds = (now - last_time).total_seconds()
-            
-            if elapsed_seconds >= FOLLOWUP_DELAY:
-                current_count = lead.get("followup_count", 0) or 0
-                next_count = current_count + 1
-                
-                if next_count <= 2:
-                    email_sent = send_followup_email(lead["id"], lead["incubator_name"], lead["email"], next_count)
-                    msg_status = "SMTP Sent" if email_sent else "Simulated"
-                    dispatched.append({
-                        "id": lead["id"],
-                        "incubator_name": lead["incubator_name"],
-                        "email": lead["email"],
-                        "followup_number": next_count,
-                        "status": msg_status
-                    })
-        except Exception as e:
-            print(f"Error parsing date/sending follow-up for lead {lead['email']}: {e}")
-            
-    conn.close()
-    return {
-        "status": "success",
-        "checked_at": now.isoformat(),
-        "followups_sent_count": len(dispatched),
-        "dispatched": dispatched
-    }
+    try:
+        leads = OutreachLeadRepository(db).list_by_statuses(
+            ["Sent", "Follow-up Sent"]
+        )
+        dispatched = []
+        now = datetime.now().astimezone()
 
-def check_and_send_followups_sync():
-    from datetime import datetime
+        for lead in leads:
+            last_time = lead.last_followup_at or lead.sent_at
+            if not last_time:
+                continue
+
+            try:
+                elapsed_seconds = (now - last_time).total_seconds()
+                if elapsed_seconds >= FOLLOWUP_DELAY:
+                    next_count = (lead.followup_count or 0) + 1
+                    if next_count <= 2:
+                        email_sent = send_followup_email(
+                            db,
+                            lead.id,
+                            lead.incubator_name,
+                            lead.email,
+                            next_count,
+                        )
+                        dispatched.append(
+                            {
+                                "id": lead.id,
+                                "incubator_name": lead.incubator_name,
+                                "email": lead.email,
+                                "followup_number": next_count,
+                                "status": (
+                                    "SMTP Sent" if email_sent else "Simulated"
+                                ),
+                            }
+                        )
+            except Exception as e:
+                print(
+                    "Error parsing date/sending follow-up for lead "
+                    f"{lead.email}: {e}"
+                )
+
+        db.commit()
+        return {
+            "status": "success",
+            "checked_at": serialize_legacy_datetime(now),
+            "followups_sent_count": len(dispatched),
+            "dispatched": dispatched,
+        }
+    except Exception:
+        db.rollback()
+        raise
+
+
+def check_and_send_followups_sync(db: Session):
     global FOLLOWUP_DELAY
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM outreach_leads WHERE status IN ('Sent', 'Follow-up Sent')")
-    leads = [dict(row) for row in cursor.fetchall()]
-    
-    now = datetime.now()
+
+    leads = OutreachLeadRepository(db).list_by_statuses(
+        ["Sent", "Follow-up Sent"]
+    )
+    now = datetime.now().astimezone()
     for lead in leads:
-        last_time_str = lead.get("last_followup_at") or lead.get("sent_at")
-        if not last_time_str:
+        last_time = lead.last_followup_at or lead.sent_at
+        if not last_time:
             continue
-            
+
         try:
-            last_time = datetime.fromisoformat(last_time_str)
             elapsed_seconds = (now - last_time).total_seconds()
             if elapsed_seconds >= FOLLOWUP_DELAY:
-                current_count = lead.get("followup_count", 0) or 0
-                next_count = current_count + 1
+                next_count = (lead.followup_count or 0) + 1
                 if next_count <= 2:
-                    print(f"Background daemon: Triggering follow-up #{next_count} for {lead['incubator_name']} ({lead['email']})")
-                    send_followup_email(lead["id"], lead["incubator_name"], lead["email"], next_count)
+                    print(
+                        f"Background daemon: Triggering follow-up #{next_count} "
+                        f"for {lead.incubator_name} ({lead.email})"
+                    )
+                    send_followup_email(
+                        db,
+                        lead.id,
+                        lead.incubator_name,
+                        lead.email,
+                        next_count,
+                    )
         except Exception as e:
             print(f"Background daemon error sending follow-up: {e}")
-            
-    conn.close()
 
 def clean_email_reply(text: str) -> str:
     if not text:
@@ -1710,19 +1803,15 @@ def clean_email_reply(text: str) -> str:
         lines.append(line)
     return "\n".join(lines).strip()
 
-def process_reply(lead_id: str, reply_text: str):
+def process_reply(db: Session, lead_id: str, reply_text: str):
     import uuid
     import json
     import os
     import re
     from datetime import datetime
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT * FROM outreach_leads WHERE id = ?", (lead_id,))
-    lead = cursor.fetchone()
+    repository = OutreachLeadRepository(db)
+    lead = repository.get_by_id(lead_id)
     if not lead:
-        conn.close()
         return None
         
     openrouter_key = os.environ.get("OPENROUTER_API_KEY")
@@ -1920,35 +2009,19 @@ def process_reply(lead_id: str, reply_text: str):
     else:
         new_status = 'Replied'
         
-    cursor.execute('''
-        UPDATE outreach_leads 
-        SET status = ?, 
-            reply_text = ?, 
-            reply_detected_at = ?, 
-            intent_classification = ?, 
-            lead_score = ?,
-            meeting_link = ?,
-            meeting_scheduled_at = ?,
-            reply_sentiment = ?,
-            reply_urgency = ?,
-            reply_reason = ?
-        WHERE id = ?
-    ''', (
-        new_status,
-        reply_text,
-        datetime.now().isoformat(),
-        intent,
-        score,
-        meeting_link if meeting_link else lead["meeting_link"],
-        meeting_scheduled_at if meeting_scheduled_at else lead["meeting_scheduled_at"],
-        sentiment,
-        urgency,
-        reason_code,
-        lead_id
-    ))
-    
-    conn.commit()
-    conn.close()
+    lead.status = new_status
+    lead.reply_text = reply_text
+    lead.reply_detected_at = datetime.now().astimezone()
+    lead.intent_classification = intent
+    lead.lead_score = score
+    lead.meeting_link = meeting_link or lead.meeting_link
+    lead.meeting_scheduled_at = (
+        meeting_scheduled_at or lead.meeting_scheduled_at
+    )
+    lead.reply_sentiment = sentiment
+    lead.reply_urgency = urgency
+    lead.reply_reason = reason_code
+    repository.update(lead)
     
     return {
         "status": "success",
@@ -1963,11 +2036,19 @@ def process_reply(lead_id: str, reply_text: str):
     }
 
 @app.post("/api/outreach/simulate-reply")
-def process_outreach_reply(req: OutreachReplyRequest):
-    res = process_reply(req.lead_id, req.reply_text)
-    if not res:
-        raise HTTPException(status_code=404, detail="Lead not found")
-    return res
+def process_outreach_reply(
+    req: OutreachReplyRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        res = process_reply(db, req.lead_id, req.reply_text)
+        if not res:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        db.commit()
+        return res
+    except Exception:
+        db.rollback()
+        raise
 
 def extract_email_address(from_header):
     if not from_header:
@@ -1979,7 +2060,7 @@ def extract_email_address(from_header):
     # Remove surrounding quotes if any
     return from_header.strip().strip('"').strip("'").lower()
 
-def check_imap_replies_sync():
+def check_imap_replies_sync(db: Session):
     import imaplib
     import email
     from email.header import decode_header
@@ -2023,12 +2104,14 @@ def check_imap_replies_sync():
         mail_ids = mail_ids[-40:]
         print(f"IMAP connection successful. Scanning the last {len(mail_ids)} messages in Inbox...")
         
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
         # Get active leads email map that are currently waiting for a reply
-        cursor.execute("SELECT id, email, status, incubator_name, sent_at FROM outreach_leads WHERE status IN ('Sent', 'Follow-up Sent')")
-        leads = {row["email"].lower().strip(): row for row in cursor.fetchall()}
+        outreach_repository = OutreachLeadRepository(db)
+        leads = {
+            lead.email.lower().strip(): lead
+            for lead in outreach_repository.list_by_statuses(
+                ["Sent", "Follow-up Sent"]
+            )
+        }
         
         print("Active leads waiting for replies (Sent/Follow-up status):", list(leads.keys()))
         
@@ -2062,16 +2145,22 @@ def check_imap_replies_sync():
                             msg_date = email.utils.parsedate_to_datetime(msg_date_str)
                             msg_date_local = msg_date.astimezone().replace(tzinfo=None)
                             
-                            sent_at_str = lead["sent_at"]
-                            if sent_at_str:
-                                sent_at_dt = datetime.fromisoformat(sent_at_str)
+                            sent_at_dt = lead.sent_at
+                            if sent_at_dt:
+                                if sent_at_dt.tzinfo is not None:
+                                    sent_at_dt = sent_at_dt.astimezone().replace(
+                                        tzinfo=None
+                                    )
                                 if msg_date_local < sent_at_dt:
                                     print(f"Skipping email from {from_email} as it was received at {msg_date_local} (before outreach email sent at {sent_at_dt})")
                                     continue
                         except Exception as date_err:
                             print(f"Error parsing date for message from {from_email}: {date_err}")
                             
-                    print(f"Match found for Sent lead: {lead['incubator_name']} ({from_email})!")
+                    print(
+                        "Match found for Sent lead: "
+                        f"{lead.incubator_name} ({from_email})!"
+                    )
                     
                     body = ""
                     if msg.is_multipart():
@@ -2086,11 +2175,11 @@ def check_imap_replies_sync():
                         payload = msg.get_payload(decode=True)
                         body = payload.decode(msg.get_content_charset() or "utf-8", errors="ignore")
                     
-                    res = process_reply(lead["id"], body)
+                    res = process_reply(db, lead.id, body)
                     if res:
                         print(f"Successfully processed reply from {from_email}. New status: {res['lead_status']}")
                         processed_replies.append({
-                            "incubator_name": lead["incubator_name"],
+                            "incubator_name": lead.incubator_name,
                             "email": from_email,
                             "reply_text": body,
                             "intent": res["intent"],
@@ -2106,7 +2195,6 @@ def check_imap_replies_sync():
             except Exception as item_err:
                 print(f"Error reading message ID {m_id}: {item_err}")
                 
-        conn.close()
         mail.close()
         mail.logout()
     except Exception as e:
@@ -2534,10 +2622,18 @@ def update_outreach_config(cfg: OutreachConfig):
     return {"status": "success", "sync_interval": IMAP_SYNC_INTERVAL, "followup_delay": FOLLOWUP_DELAY}
 
 @app.post("/api/outreach/check-replies")
-def trigger_check_replies():
-    from datetime import datetime
-    replies = check_imap_replies_sync()
-    return {"status": "success", "checked_at": datetime.now().isoformat(), "new_replies": replies}
+def trigger_check_replies(db: Session = Depends(get_db)):
+    try:
+        replies = check_imap_replies_sync(db)
+        db.commit()
+        return {
+            "status": "success",
+            "checked_at": datetime.now().isoformat(),
+            "new_replies": replies,
+        }
+    except Exception:
+        db.rollback()
+        raise
 
 class ScheduleMeetingRequest(BaseModel):
     lead_id: str
@@ -2545,19 +2641,18 @@ class ScheduleMeetingRequest(BaseModel):
     time: str
 
 @app.post("/api/outreach/schedule-meeting")
-def api_schedule_meeting(req: ScheduleMeetingRequest):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM outreach_leads WHERE id = ?", (req.lead_id,))
-    lead = cursor.fetchone()
+def api_schedule_meeting(
+    req: ScheduleMeetingRequest,
+    db: Session = Depends(get_db),
+):
+    outreach_repository = OutreachLeadRepository(db)
+    meeting_repository = ScheduledMeetingRepository(db)
+    lead = outreach_repository.get_by_id(req.lead_id)
     if not lead:
-        conn.close()
         raise HTTPException(status_code=404, detail="Lead not found")
-        
-    lead = dict(lead)
     
     import uuid
-    summary = f"MOU Collaboration: {lead['incubator_name']}"
+    summary = f"MOU Collaboration: {lead.incubator_name}"
     description = f"Introductory discussion regarding strategic cooperation and academic collaboration MoU."
     
     gmeet_info = create_gmeet_event(
@@ -2565,7 +2660,7 @@ def api_schedule_meeting(req: ScheduleMeetingRequest):
         description=description,
         date_str=req.date,
         time_str=req.time,
-        attendee_email=lead["email"]
+        attendee_email=lead.email
     )
     
     calendar_event_id = None
@@ -2580,46 +2675,34 @@ def api_schedule_meeting(req: ScheduleMeetingRequest):
         
     meeting_id = f"evt_{uuid.uuid4().hex[:8]}"
     
-    cursor.execute("SELECT COUNT(*) FROM scheduled_meetings WHERE lead_id = ?", (req.lead_id,))
-    if cursor.fetchone()[0] == 0:
-        cursor.execute('''
-            INSERT INTO scheduled_meetings (
-                id, lead_id, incubator_name, title, date, time, calendar_event_id, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            meeting_id,
-            req.lead_id,
-            lead["incubator_name"],
-            summary,
-            req.date,
-            req.time,
-            calendar_event_id,
-            "Scheduled"
-        ))
+    if not meeting_repository.exists_by_lead_id(req.lead_id):
+        meeting_repository.create(
+            ScheduledMeeting(
+                id=meeting_id,
+                lead_id=req.lead_id,
+                incubator_name=lead.incubator_name,
+                title=summary,
+                date=req.date,
+                time=req.time,
+                calendar_event_id=calendar_event_id,
+                status="Scheduled",
+            )
+        )
         
     send_meeting_invite_email(
-        lead_name=lead["incubator_name"],
-        lead_email=lead["email"],
+        lead_name=lead.incubator_name,
+        lead_email=lead.email,
         date_str=req.date,
         time_str=req.time,
         meet_link=meeting_link
     )
     
     meeting_scheduled_at = f"{req.date} at {req.time}"
-    cursor.execute('''
-        UPDATE outreach_leads 
-        SET status = 'Meeting Scheduled',
-            meeting_link = ?,
-            meeting_scheduled_at = ?
-        WHERE id = ?
-    ''', (
-        meeting_link,
-        meeting_scheduled_at,
-        req.lead_id
-    ))
-    
-    conn.commit()
-    conn.close()
+    lead.status = "Meeting Scheduled"
+    lead.meeting_link = meeting_link
+    lead.meeting_scheduled_at = meeting_scheduled_at
+    outreach_repository.update(lead)
+    db.commit()
     
     return {
         "status": "success",
@@ -2628,43 +2711,47 @@ def api_schedule_meeting(req: ScheduleMeetingRequest):
     }
 
 @app.get("/api/outreach/meetings")
-def get_outreach_meetings():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT m.*, l.meeting_link, l.incubator_id 
-        FROM scheduled_meetings m
-        LEFT JOIN outreach_leads l ON m.lead_id = l.id
-    ''')
-    rows = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return rows
+def get_outreach_meetings(db: Session = Depends(get_db)):
+    meetings = ScheduledMeetingRepository(db).list_all()
+    return [serialize_scheduled_meeting(meeting) for meeting in meetings]
 
 @app.post("/api/outreach/meetings/update-status")
-def update_meeting_status(req: UpdateMeetingStatusRequest):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM scheduled_meetings WHERE id = ?", (req.meeting_id,))
-    meeting = cursor.fetchone()
-    if not meeting:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Meeting not found")
-    
-    if req.status.lower() == "completed":
-        lead_id = meeting["lead_id"]
-        # Delete this meeting and any other meetings associated with this lead
-        cursor.execute("DELETE FROM scheduled_meetings WHERE id = ?", (req.meeting_id,))
-        if lead_id:
-            cursor.execute("DELETE FROM scheduled_meetings WHERE lead_id = ?", (lead_id,))
-            cursor.execute("DELETE FROM outreach_leads WHERE id = ?", (lead_id,))
-        conn.commit()
-        conn.close()
-        return {"status": "success", "message": "Meeting completed. Incubator removed from campaign and meetings."}
-    else:
-        cursor.execute("UPDATE scheduled_meetings SET status = ? WHERE id = ?", (req.status, req.meeting_id))
-        conn.commit()
-        conn.close()
-        return {"status": "success", "message": f"Meeting status updated to {req.status}."}
+def update_meeting_status(
+    req: UpdateMeetingStatusRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        meeting_repository = ScheduledMeetingRepository(db)
+        outreach_repository = OutreachLeadRepository(db)
+        meeting = meeting_repository.get_by_id(req.meeting_id)
+        if not meeting:
+            raise HTTPException(status_code=404, detail="Meeting not found")
+
+        if req.status.lower() == "completed":
+            lead_id = meeting.lead_id
+            meeting_repository.delete_by_lead_id(lead_id)
+            lead = outreach_repository.get_by_id(lead_id)
+            if lead:
+                outreach_repository.delete(lead)
+            db.commit()
+            return {
+                "status": "success",
+                "message": (
+                    "Meeting completed. Incubator removed from campaign "
+                    "and meetings."
+                ),
+            }
+
+        meeting.status = req.status
+        meeting_repository.update(meeting)
+        db.commit()
+        return {
+            "status": "success",
+            "message": f"Meeting status updated to {req.status}.",
+        }
+    except Exception:
+        db.rollback()
+        raise
 
 @app.get("/api/outreach/calendar-events")
 def get_external_calendar_events():
@@ -2715,12 +2802,17 @@ def start_imap_checking_loop():
     def loop():
         global IMAP_SYNC_INTERVAL
         while True:
+            db = SessionLocal()
             try:
                 if IMAP_SYNC_INTERVAL > 0:
-                    check_imap_replies_sync()
-                    check_and_send_followups_sync()
+                    check_imap_replies_sync(db)
+                    check_and_send_followups_sync(db)
+                    db.commit()
             except Exception as e:
+                db.rollback()
                 print("IMAP background checker loop error:", e)
+            finally:
+                db.close()
             
             sleep_time = max(5, IMAP_SYNC_INTERVAL) if IMAP_SYNC_INTERVAL > 0 else 5
             time.sleep(sleep_time)
@@ -2987,9 +3079,12 @@ def add_cohort_to_database(req: AddCohortToEcosystemRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/incubein/add-to-campaigns")
-def add_cohort_to_campaigns(req: AddCohortToEcosystemRequest):
+def add_cohort_to_campaigns(
+    req: AddCohortToEcosystemRequest,
+    sql_db: Session = Depends(get_db),
+):
     try:
-        db = get_mongo_db()
+        mongo_db = get_mongo_db()
         from bson import ObjectId
         import uuid
         
@@ -3004,11 +3099,8 @@ def add_cohort_to_campaigns(req: AddCohortToEcosystemRequest):
                     pass
             query = {"_id": {"$in": parsed_ids}}
             
-        cursor = db["incubein_applications"].find(query)
-        
-        # Open translation connection
-        conn = get_db_connection()
-        db_cursor = conn.cursor()
+        cursor = mongo_db["incubein_applications"].find(query)
+        outreach_repository = OutreachLeadRepository(sql_db)
         
         inserted_count = 0
         for doc in cursor:
@@ -3018,43 +3110,55 @@ def add_cohort_to_campaigns(req: AddCohortToEcosystemRequest):
             if not email:
                 continue
                 
-            # Check duplicate in outreach_leads using both email and startup_name
-            db_cursor.execute("SELECT id FROM outreach_leads WHERE email = ? AND incubator_name = ?", (email, doc["startup_name"]))
-            existing = db_cursor.fetchone()
+            existing = outreach_repository.get_by_email_and_name(
+                email,
+                doc["startup_name"],
+            )
             
             if existing:
-                # Update existing lead status and lead_score
-                db_cursor.execute('''
-                    UPDATE outreach_leads 
-                    SET status = 'Draft', lead_score = 0, incubator_id = 'incubein_cohort' 
-                    WHERE email = ? AND incubator_name = ?
-                ''', (email, doc["startup_name"]))
+                existing.status = "Draft"
+                existing.lead_score = 0
+                existing.incubator_id = "incubein_cohort"
+                outreach_repository.update(existing)
                 inserted_count += 1
             else:
-                # Insert new lead with all required schema columns populated
-                lead_id = f"lead_{uuid.uuid4().hex[:8]}"
-                db_cursor.execute('''
-                    INSERT INTO outreach_leads (
-                        id, incubator_id, incubator_name, email, status, lead_score, 
-                        contact_count, last_contact_reason, next_action_date
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (lead_id, 'incubein_cohort', doc["startup_name"], email, 'Draft', 0, 0, 'None', ''))
+                outreach_repository.create(
+                    OutreachLead(
+                        id=f"lead_{uuid.uuid4().hex[:8]}",
+                        incubator_id="incubein_cohort",
+                        incubator_name=doc["startup_name"],
+                        email=email,
+                        status="Draft",
+                        lead_score=0,
+                        contact_count=0,
+                        last_contact_reason="None",
+                        next_action_date="",
+                    )
+                )
                 inserted_count += 1
                 
-        conn.commit()
-        conn.close()
+        sql_db.commit()
         
         return {"status": "success", "message": f"Successfully added {inserted_count} startups to the outreach campaign leads."}
     except Exception as e:
+        sql_db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/outreach/clear-startups")
-def clear_startup_campaigns():
+def clear_startup_campaigns(sql_db: Session = Depends(get_db)):
     try:
-        db = get_mongo_db()
-        res = db["outreach_leads"].delete_many({"incubator_id": "incubein_cohort"})
-        return {"status": "success", "message": f"Cleared {res.deleted_count} startup campaign leads successfully."}
+        deleted_count = OutreachLeadRepository(
+            sql_db
+        ).delete_by_incubator_id("incubein_cohort")
+        sql_db.commit()
+        return {
+            "status": "success",
+            "message": (
+                f"Cleared {deleted_count} startup campaign leads successfully."
+            ),
+        }
     except Exception as e:
+        sql_db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/incubators/clear")
@@ -3074,7 +3178,3 @@ def clear_startups_directory():
         return {"status": "success", "message": f"Successfully cleared {res.deleted_count} startups from the directory."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-
-

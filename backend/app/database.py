@@ -234,43 +234,6 @@ class MongoCursor:
             self.rowcount = len(self.results)
             return self
 
-        if "LEFT JOIN outreach_leads" in sql_clean:
-            pipeline = [
-                {
-                    "$lookup": {
-                        "from": "outreach_leads",
-                        "localField": "lead_id",
-                        "foreignField": "id",
-                        "as": "lead"
-                    }
-                },
-                {
-                    "$unwind": {
-                        "path": "$lead",
-                        "preserveNullAndEmptyArrays": True
-                    }
-                },
-                {
-                    "$project": {
-                        "id": 1,
-                        "lead_id": 1,
-                        "incubator_name": 1,
-                        "title": 1,
-                        "date": 1,
-                        "time": 1,
-                        "calendar_event_id": 1,
-                        "status": 1,
-                        "meeting_link": "$lead.meeting_link"
-                    }
-                }
-            ]
-            raw_res = list(self.db["scheduled_meetings"].aggregate(pipeline))
-            keys = ["id", "lead_id", "incubator_name", "title", "date", "time", "calendar_event_id", "status", "meeting_link"]
-            self.results = [MongoRow(r, keys) for r in raw_res]
-            self.current_idx = 0
-            self.rowcount = len(self.results)
-            return self
-
         if " UNION " in sql_clean.upper():
             subqueries = re.split(r"\s+UNION\s+", sql_clean, flags=re.IGNORECASE)
             all_raw = []
@@ -524,5 +487,3 @@ def clear_all_tables():
     cursor.execute("DELETE FROM investors")
     cursor.execute("DELETE FROM relationships")
     cursor.execute("DELETE FROM pipeline_logs")
-    cursor.execute("DELETE FROM outreach_leads")
-    cursor.execute("DELETE FROM scheduled_meetings")

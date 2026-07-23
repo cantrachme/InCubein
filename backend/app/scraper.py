@@ -1,10 +1,26 @@
 import json
-import uuid
 import os
 import ast
 import re
 import openpyxl
-from datetime import datetime
+from sqlalchemy.orm import Session
+
+from app.enums.funding_stage import FundingStage
+from app.enums.organization_type import OrganizationType
+from app.models.city import City
+from app.models.incubator import Incubator
+from app.models.investor import Investor
+from app.models.mentor import Mentor
+from app.models.startup import Startup
+from app.models.state import State
+from app.repositories.city_repository import CityRepository
+from app.repositories.incubator_repository import IncubatorRepository
+from app.repositories.investor_repository import InvestorRepository
+from app.repositories.mentor_repository import MentorRepository
+from app.repositories.startup_repository import StartupRepository
+from app.repositories.state_repository import StateRepository
+from app.utils.slug import generate_slug
+
 from .database import get_db_connection, log_pipeline_step
 
 def clean_sectors(sector_str):
@@ -506,25 +522,53 @@ RAW_INVESTORS = [
     {"name": "Atal Innovation Mission Scheme", "type": "Government Scheme", "email": "aim@gov.in", "linkedin": "", "investment_stage": ["Grant", "Seed"], "portfolio_startups": ["Agnikul Cosmos", "The ePlane Company", "Yulu"]}
 ]
 
-def run_scraper_pipeline():
-    """Runs the scraper pipeline. This empties current database tables and inserts raw uncleaned scraped data."""
+def run_scraper_pipeline(db: Session):
+    """Synchronizes scraped data with the PostgreSQL canonical entities."""
     log_pipeline_step("SCRAPE", "START", "Starting data ingestion pipeline from ecosystem sources...")
+
+    incubator_repository = IncubatorRepository(db)
+    startup_repository = StartupRepository(db)
+    mentor_repository = MentorRepository(db)
+    investor_repository = InvestorRepository(db)
+    state_repository = StateRepository(db)
+    city_repository = CityRepository(db)
     
     conn = get_db_connection()
     cursor = conn.cursor()
     
     try:
-        # Clear existing tables to reset pipeline state
-        cursor.execute("DELETE FROM incubators")
-        cursor.execute("DELETE FROM startups")
-        cursor.execute("DELETE FROM mentors")
-        cursor.execute("DELETE FROM investors")
-        cursor.execute("DELETE FROM relationships")
-        
+        existing_entities = {}
+        for repository in (
+            incubator_repository,
+            startup_repository,
+            mentor_repository,
+            investor_repository,
+        ):
+            records = []
+            skip = 0
+            while batch := repository.list(skip=skip, limit=100):
+                records.extend(batch)
+                skip += len(batch)
+            existing_entities[repository] = {
+                record.slug: record for record in records
+            }
+
         # Load from Excel
-        excel_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "incubators_with_contact_details(100).xlsx")
-        if not os.path.exists(excel_path):
-            excel_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "db01.xlsx")
+        backend_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        project_path = os.path.dirname(backend_path)
+        excel_candidates = (
+            os.path.join(backend_path, "incubators_with_contact_details(100).xlsx"),
+            os.path.join(backend_path, "incubators_with_contact_details.xlsx"),
+            os.path.join(project_path, "incubators_with_contact_details.xlsx"),
+            os.path.join(backend_path, "db01.xlsx"),
+        )
+        excel_path = next(
+            (path for path in excel_candidates if os.path.exists(path)),
+            None,
+        )
+        if excel_path is None:
+            raise FileNotFoundError("No incubator source workbook was found")
+
         wb = openpyxl.load_workbook(excel_path, read_only=True)
         sheet = wb.active
         excel_rows = list(sheet.iter_rows(values_only=True))
@@ -533,6 +577,7 @@ def run_scraper_pipeline():
         data_rows = [r for r in excel_rows[1:] if r and r[0]] # Filter empty rows
         
         incubator_id_map = {}
+        skipped_incubators_count = 0
         
         for row in data_rows:
             inc_name = row[0]
@@ -542,9 +587,10 @@ def run_scraper_pipeline():
             inc_email = row[4]
             inc_sector = row[5]
             inc_source = row[6]
-            
-            inc_id = f"inc_{uuid.uuid4().hex[:8]}"
-            incubator_id_map[inc_name] = inc_id
+
+            if not inc_state or not inc_city:
+                skipped_incubators_count += 1
+                continue
             
             # Clean sectors to focus areas JSON list
             focus_list = clean_sectors(inc_sector)
@@ -566,127 +612,179 @@ def run_scraper_pipeline():
                 org_type = "Private"
             else:
                 org_type = "Government Support" if "DST" in str(inc_source) or "MeitY" in str(inc_source) else "Private"
-                
-            cursor.execute('''
-                INSERT INTO incubators (
-                    id, name, description, organization_type, year_established, website,
-                    email, phone, linkedin, twitter, founder_or_head, address, city,
-                    state, country, postal_code, latitude, longitude, incubation_programs,
-                    acceleration_programs, funding_support, equity_model, grant_support,
-                    mentorship_available, coworking_available, lab_facilities, duration,
-                    focus_areas, startup_count, active_startups, confidence_score, status,
-                    last_updated, source_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                inc_id,
-                inc_name,
-                desc,
-                org_type,
-                None, # Year established (not in excel)
-                inc_website,
-                inc_email,
-                None, # Phone
-                None, # Linkedin
-                None, # Twitter
-                None, # Founder/Head
-                None, # Address
-                inc_city,
-                inc_state,
-                "India",
-                None, # Postal code
-                None, # Latitude
-                None, # Longitude
-                json.dumps([]), # Incubation programs
-                json.dumps([]), # Acceleration programs
-                None, # Funding support
-                None, # Equity model
-                inc_source, # Grant/Source support
-                1, 1, # Mentorship, Coworking
-                json.dumps([]), # Lab facilities
-                None, # Duration
-                focus_areas_json,
-                0, 0,
-                0.90, # Raw confidence score
-                "raw",
-                datetime.now().isoformat(),
-                inc_source # Source url / reference
-            ))
+
+            state_name = str(inc_state).strip()
+            state_code = state_name.upper()
+            state = state_repository.get_by_code("IN", state_code)
+            if state is None:
+                state = state_repository.get_by_name("IN", state_name)
+            if state is None:
+                state = state_repository.create(
+                    State(
+                        name=state_name,
+                        code=state_code,
+                        country_code="IN",
+                    )
+                )
+
+            city_name = str(inc_city).strip()
+            city = city_repository.get_by_state_and_name(state.id, city_name)
+            if city is None:
+                city = city_repository.create(
+                    City(
+                        state_id=state.id,
+                        name=city_name,
+                    )
+                )
+
+            slug = generate_slug(inc_name)
+            incubator = existing_entities[incubator_repository].pop(slug, None)
+            if incubator is None:
+                incubator = incubator_repository.create(
+                    Incubator(
+                        name=inc_name,
+                        slug=slug,
+                        description=desc,
+                        city_id=city.id,
+                        organization_type=OrganizationType(org_type),
+                        founded_year=None,
+                    )
+                )
+            else:
+                incubator.name = inc_name
+                incubator.description = desc
+                incubator.city_id = city.id
+                incubator.organization_type = OrganizationType(org_type)
+                incubator.founded_year = None
+                incubator.is_active = True
+                incubator.deleted_at = None
+                incubator_repository.update(incubator)
+
+            incubator_id_map[inc_name] = incubator.id
             
         # Save raw startups
         startup_id_map = {}
         for start in RAW_STARTUPS:
-            start_id = f"start_{uuid.uuid4().hex[:8]}"
-            startup_id_map[start["startup_name"]] = start_id
-            
             # Match incubator reference ID using fuzzy matcher
             inc_id = find_best_incubator_id(incubator_id_map, start["incubated_at"])
-            
-            cursor.execute('''
-                INSERT INTO startups (
-                    id, startup_name, sector, founders, website, funding_stage, hq_city,
-                    incubated_at, incubator_id, confidence_score, status, last_updated, source_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                start_id,
-                start["startup_name"],
-                start["sector"],
-                json.dumps(start["founders"]),
-                start["website"],
-                start["funding_stage"],
-                start["hq_city"],
-                start["incubated_at"],
-                inc_id,
-                0.75, # Raw confidence score
-                "raw",
-                datetime.now().isoformat(),
-                start["source_url"]
-            ))
+
+            try:
+                funding_stage = FundingStage(start["funding_stage"])
+            except ValueError:
+                funding_stage = FundingStage.UNKNOWN
+
+            slug = generate_slug(start["startup_name"])
+            startup = existing_entities[startup_repository].pop(slug, None)
+            if startup is None:
+                startup = startup_repository.create(
+                    Startup(
+                        incubator_id=inc_id,
+                        name=start["startup_name"],
+                        slug=slug,
+                        funding_stage=funding_stage,
+                        website=start["website"],
+                    )
+                )
+            else:
+                startup.incubator_id = inc_id
+                startup.name = start["startup_name"]
+                startup.description = None
+                startup.founded_year = None
+                startup.funding_stage = funding_stage
+                startup.website = start["website"]
+                startup.is_active = True
+                startup.deleted_at = None
+                startup_repository.update(startup)
+
+            startup_id_map[start["startup_name"]] = startup.id
 
         # Save raw mentors
+        mentor_id_map = {}
         for m in RAW_MENTORS:
-            m_id = f"men_{uuid.uuid4().hex[:8]}"
             inc_id = find_best_incubator_id(incubator_id_map, m["incubator"])
-            cursor.execute('''
-                INSERT INTO mentors (id, name, email, linkedin, expertise, incubator_id)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (
-                m_id,
-                m["name"],
-                m["email"],
-                m["linkedin"],
-                json.dumps(m["expertise"]),
-                inc_id
-            ))
+            slug = generate_slug(m["name"])
+            mentor = existing_entities[mentor_repository].pop(slug, None)
+            if mentor is None:
+                mentor = mentor_repository.create(
+                    Mentor(
+                        incubator_id=inc_id,
+                        full_name=m["name"],
+                        slug=slug,
+                        linkedin_url=m["linkedin"] or None,
+                        email=m["email"] or None,
+                    )
+                )
+            else:
+                mentor.incubator_id = inc_id
+                mentor.full_name = m["name"]
+                mentor.headline = None
+                mentor.bio = None
+                mentor.linkedin_url = m["linkedin"] or None
+                mentor.website = None
+                mentor.email = m["email"] or None
+                mentor.phone = None
+                mentor.is_active = True
+                mentor.deleted_at = None
+                mentor_repository.update(mentor)
+
+            mentor_id_map[m["name"]] = mentor.id
 
         # Save raw investors
+        investor_id_map = {}
         for inv in RAW_INVESTORS:
-            inv_id = f"inv_{uuid.uuid4().hex[:8]}"
-            cursor.execute('''
-                INSERT INTO investors (id, name, type, email, linkedin, investment_stage, portfolio_startups)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                inv_id,
-                inv["name"],
-                inv["type"],
-                inv["email"],
-                inv["linkedin"],
-                json.dumps(inv["investment_stage"]),
-                json.dumps(inv["portfolio_startups"])
-            ))
+            slug = generate_slug(inv["name"])
+            investor = existing_entities[investor_repository].pop(slug, None)
+            if investor is None:
+                investor = investor_repository.create(
+                    Investor(
+                        name=inv["name"],
+                        slug=slug,
+                        designation=inv["type"],
+                        linkedin_url=inv["linkedin"] or None,
+                        email=inv["email"] or None,
+                        investment_stage=json.dumps(inv["investment_stage"]),
+                    )
+                )
+            else:
+                investor.name = inv["name"]
+                investor.organization = None
+                investor.designation = inv["type"]
+                investor.bio = None
+                investor.linkedin_url = inv["linkedin"] or None
+                investor.website = None
+                investor.email = inv["email"] or None
+                investor.phone = None
+                investor.investment_stage = json.dumps(inv["investment_stage"])
+                investor.investment_focus = None
+                investor.is_active = True
+                investor.deleted_at = None
+                investor_repository.update(investor)
+
+            investor_id_map[inv["name"]] = investor.id
+
+        # Remove canonical records no longer present in the current source data.
+        for repository in (
+            mentor_repository,
+            startup_repository,
+            investor_repository,
+            incubator_repository,
+        ):
+            for record in existing_entities[repository].values():
+                repository.delete(record)
+
+        # Relationship persistence remains on the existing MongoDB path.
+        cursor.execute("DELETE FROM relationships")
 
         # Save initial relationships
         # 1. Mentor -> Incubator relationships (HAS_MENTOR)
         for m in RAW_MENTORS:
-            m_id = None
-            res = cursor.execute("SELECT id FROM mentors WHERE name = ?", (m["name"],)).fetchone()
-            if res:
-                m_id = res[0]
+            m_id = mentor_id_map.get(m["name"])
             inc_id = find_best_incubator_id(incubator_id_map, m["incubator"])
             if m_id and inc_id:
                 cursor.execute('''
                     INSERT INTO relationships (source_id, source_type, target_id, target_type, relationship_type, confidence_score, metadata)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (inc_id, "Incubator", m_id, "Mentor", "HAS_MENTOR", 0.8, json.dumps({"role": "Ecosystem Mentor"})))
+                ''', (str(inc_id), "Incubator", str(m_id), "Mentor", "HAS_MENTOR", 0.8, json.dumps({"role": "Ecosystem Mentor"})))
 
         # 2. Startup -> Incubator raw relationships (INCUBATED)
         for start in RAW_STARTUPS:
@@ -696,27 +794,27 @@ def run_scraper_pipeline():
                 cursor.execute('''
                     INSERT INTO relationships (source_id, source_type, target_id, target_type, relationship_type, confidence_score, metadata)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (inc_id, "Incubator", start_id, "Startup", "INCUBATED", 0.9, json.dumps({"stage": start["funding_stage"]})))
+                ''', (str(inc_id), "Incubator", str(start_id), "Startup", "INCUBATED", 0.9, json.dumps({"stage": start["funding_stage"]})))
 
         # 3. Investor -> Startup relationships (FUNDED)
         for inv in RAW_INVESTORS:
-            inv_id = None
-            res = cursor.execute("SELECT id FROM investors WHERE name = ?", (inv["name"],)).fetchone()
-            if res:
-                inv_id = res[0]
+            inv_id = investor_id_map.get(inv["name"])
             for port in inv["portfolio_startups"]:
                 start_id = startup_id_map.get(port)
                 if inv_id and start_id:
                     cursor.execute('''
                         INSERT INTO relationships (source_id, source_type, target_id, target_type, relationship_type, confidence_score, metadata)
                         VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (inv_id, "Investor", start_id, "Startup", "FUNDED", 0.85, json.dumps({"type": inv["type"]})))
+                    ''', (str(inv_id), "Investor", str(start_id), "Startup", "FUNDED", 0.85, json.dumps({"type": inv["type"]})))
 
-        conn.commit()
-        log_pipeline_step("SCRAPE", "SUCCESS", f"Successfully ingested {len(data_rows)} incubators from {os.path.basename(excel_path)}, {len(RAW_STARTUPS)} startups, {len(RAW_MENTORS)} mentors, and {len(RAW_INVESTORS)} investors.")
-        return {"status": "success", "incubators": len(data_rows), "startups": len(RAW_STARTUPS)}
+        log_pipeline_step("SCRAPE", "SUCCESS", f"Successfully ingested {len(incubator_id_map)} incubators from {os.path.basename(excel_path)}, skipped {skipped_incubators_count} incubators without a complete location, and ingested {len(RAW_STARTUPS)} startups, {len(RAW_MENTORS)} mentors, and {len(RAW_INVESTORS)} investors.")
+        return {
+            "status": "success",
+            "incubators": len(incubator_id_map),
+            "skipped_incubators": skipped_incubators_count,
+            "startups": len(RAW_STARTUPS),
+        }
     except Exception as e:
-        conn.rollback()
         log_pipeline_step("SCRAPE", "ERROR", f"Error during scraping/ingestion: {str(e)}")
         raise e
     finally:

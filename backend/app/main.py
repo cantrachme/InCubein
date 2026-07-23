@@ -2,7 +2,8 @@ import os
 import json
 import zipfile
 import io
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from sqlalchemy.orm import Session
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -13,6 +14,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 
 from .database import get_db_connection, get_pipeline_logs, log_pipeline_step, clear_all_tables
+from .db.session import get_db
 from .scraper import run_scraper_pipeline
 from .cleaner import run_cleaner_pipeline
 from .resolution import run_resolution_pipeline
@@ -72,11 +74,18 @@ def reset_pipeline():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/pipeline/run", response_model=PipelineRunResponse)
-def run_pipeline(stage: str = Query("all", description="Stage to run: scrape, clean, resolve, enrich, or all")):
+def run_pipeline(
+    stage: str = Query(
+        "all",
+        description="Stage to run: scrape, clean, resolve, enrich, or all",
+    ),
+    db: Session = Depends(get_db),
+):
     try:
         stage = stage.lower()
         if stage == "scrape":
-            res = run_scraper_pipeline()
+            res = run_scraper_pipeline(db)
+            db.commit()
             return PipelineRunResponse(status="success", message="Scraper pipeline run complete.", details=res)
         elif stage == "clean":
             res = run_cleaner_pipeline()
@@ -89,7 +98,8 @@ def run_pipeline(stage: str = Query("all", description="Stage to run: scrape, cl
             return PipelineRunResponse(status="success", message="AI enrichment pipeline run complete.", details=res)
         elif stage == "all":
             # Run all sequentially
-            scrape_res = run_scraper_pipeline()
+            scrape_res = run_scraper_pipeline(db)
+            db.commit()
             clean_res = run_cleaner_pipeline()
             resolve_res = run_resolution_pipeline()
             enrich_res = run_enricher_pipeline()
@@ -106,6 +116,7 @@ def run_pipeline(stage: str = Query("all", description="Stage to run: scrape, cl
         else:
             raise HTTPException(status_code=400, detail="Invalid pipeline stage. Select from: scrape, clean, resolve, enrich, all")
     except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/pipeline/logs")
@@ -3063,7 +3074,6 @@ def clear_startups_directory():
         return {"status": "success", "message": f"Successfully cleared {res.deleted_count} startups from the directory."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 

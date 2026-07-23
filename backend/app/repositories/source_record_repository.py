@@ -15,6 +15,32 @@ class SourceRecordRepository:
     def get_by_id(self, id: uuid.UUID) -> SourceRecord | None:
         return self.db.get(SourceRecord, id)
 
+    def get_by_source_and_external_id(
+        self,
+        entity_type: EntityType,
+        source_name: str,
+        external_id: str,
+    ) -> SourceRecord | None:
+        statement = select(SourceRecord).where(
+            SourceRecord.entity_type == entity_type,
+            SourceRecord.source_name == source_name,
+            SourceRecord.external_id == external_id,
+        )
+        return self.db.execute(statement).scalar_one_or_none()
+
+    def get_by_content_hash(
+        self,
+        entity_type: EntityType,
+        source_name: str,
+        content_hash: str,
+    ) -> SourceRecord | None:
+        statement = select(SourceRecord).where(
+            SourceRecord.entity_type == entity_type,
+            SourceRecord.source_name == source_name,
+            SourceRecord.content_hash == content_hash,
+        )
+        return self.db.execute(statement).scalar_one_or_none()
+
     def list(self, skip: int = 0, limit: int = 100) -> list[SourceRecord]:
         statement = select(SourceRecord).offset(skip).limit(limit)
         return list(self.db.execute(statement).scalars().all())

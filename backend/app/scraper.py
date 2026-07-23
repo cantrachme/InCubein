@@ -2,23 +2,29 @@ import json
 import os
 import ast
 import re
+import uuid
 import openpyxl
 from sqlalchemy.orm import Session
 
+from app.enums.entity_type import EntityType
 from app.enums.funding_stage import FundingStage
 from app.enums.organization_type import OrganizationType
+from app.enums.source_status import SourceStatus
 from app.models.city import City
 from app.models.incubator import Incubator
 from app.models.investor import Investor
 from app.models.mentor import Mentor
+from app.models.source_record import SourceRecord
 from app.models.startup import Startup
 from app.models.state import State
 from app.repositories.city_repository import CityRepository
 from app.repositories.incubator_repository import IncubatorRepository
 from app.repositories.investor_repository import InvestorRepository
 from app.repositories.mentor_repository import MentorRepository
+from app.repositories.source_record_repository import SourceRecordRepository
 from app.repositories.startup_repository import StartupRepository
 from app.repositories.state_repository import StateRepository
+from app.utils.hashing import hash_payload
 from app.utils.slug import generate_slug
 
 from .database import get_db_connection, log_pipeline_step
@@ -522,6 +528,83 @@ RAW_INVESTORS = [
     {"name": "Atal Innovation Mission Scheme", "type": "Government Scheme", "email": "aim@gov.in", "linkedin": "", "investment_stage": ["Grant", "Seed"], "portfolio_startups": ["Agnikul Cosmos", "The ePlane Company", "Yulu"]}
 ]
 
+
+def upsert_source_record(
+    repository: SourceRecordRepository,
+    entity_type: EntityType,
+    source_name: str,
+    source_url: str,
+    external_id: str,
+    raw_payload: dict[str, object],
+    canonical_id: uuid.UUID,
+) -> SourceRecord:
+    content_hash = hash_payload(raw_payload)
+    source_record = repository.get_by_source_and_external_id(
+        entity_type,
+        source_name,
+        external_id,
+    )
+    if source_record is None:
+        source_record = repository.get_by_content_hash(
+            entity_type,
+            source_name,
+            content_hash,
+        )
+
+    canonical_references = {
+        "incubator_id": None,
+        "startup_id": None,
+        "mentor_id": None,
+        "investor_id": None,
+    }
+    canonical_reference_name = {
+        EntityType.INCUBATOR: "incubator_id",
+        EntityType.STARTUP: "startup_id",
+        EntityType.MENTOR: "mentor_id",
+        EntityType.INVESTOR: "investor_id",
+    }[entity_type]
+    canonical_references[canonical_reference_name] = canonical_id
+
+    if source_record is None:
+        return repository.create(
+            SourceRecord(
+                entity_type=entity_type,
+                source_name=source_name,
+                source_url=source_url,
+                external_id=external_id,
+                raw_payload=raw_payload,
+                content_hash=content_hash,
+                status=SourceStatus.PENDING,
+                **canonical_references,
+            )
+        )
+
+    canonical_reference_changed = any(
+        getattr(source_record, field_name) != field_value
+        for field_name, field_value in canonical_references.items()
+    )
+    payload_changed = source_record.content_hash != content_hash
+    source_changed = (
+        source_record.source_url != source_url
+        or source_record.external_id != external_id
+    )
+
+    if not payload_changed and not source_changed and not canonical_reference_changed:
+        return source_record
+
+    source_record.source_url = source_url
+    source_record.external_id = external_id
+    for field_name, field_value in canonical_references.items():
+        setattr(source_record, field_name, field_value)
+
+    if payload_changed:
+        source_record.raw_payload = raw_payload
+        source_record.content_hash = content_hash
+        source_record.status = SourceStatus.PENDING
+
+    return repository.update(source_record)
+
+
 def run_scraper_pipeline(db: Session):
     """Synchronizes scraped data with the PostgreSQL canonical entities."""
     log_pipeline_step("SCRAPE", "START", "Starting data ingestion pipeline from ecosystem sources...")
@@ -532,6 +615,7 @@ def run_scraper_pipeline(db: Session):
     investor_repository = InvestorRepository(db)
     state_repository = StateRepository(db)
     city_repository = CityRepository(db)
+    source_record_repository = SourceRecordRepository(db)
     
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -661,6 +745,24 @@ def run_scraper_pipeline(db: Session):
                 incubator_repository.update(incubator)
 
             incubator_id_map[inc_name] = incubator.id
+
+            upsert_source_record(
+                source_record_repository,
+                EntityType.INCUBATOR,
+                "incubator_workbook",
+                str(inc_source or "embedded://incubator_workbook"),
+                slug,
+                {
+                    "name": inc_name,
+                    "state": inc_state,
+                    "city": inc_city,
+                    "website": inc_website,
+                    "email": inc_email,
+                    "sector": inc_sector,
+                    "source": inc_source,
+                },
+                incubator.id,
+            )
             
         # Save raw startups
         startup_id_map = {}
@@ -698,6 +800,16 @@ def run_scraper_pipeline(db: Session):
 
             startup_id_map[start["startup_name"]] = startup.id
 
+            upsert_source_record(
+                source_record_repository,
+                EntityType.STARTUP,
+                "embedded_startups",
+                start["source_url"],
+                slug,
+                dict(start),
+                startup.id,
+            )
+
         # Save raw mentors
         mentor_id_map = {}
         for m in RAW_MENTORS:
@@ -728,6 +840,16 @@ def run_scraper_pipeline(db: Session):
                 mentor_repository.update(mentor)
 
             mentor_id_map[m["name"]] = mentor.id
+
+            upsert_source_record(
+                source_record_repository,
+                EntityType.MENTOR,
+                "embedded_mentors",
+                "embedded://app.scraper/RAW_MENTORS",
+                slug,
+                dict(m),
+                mentor.id,
+            )
 
         # Save raw investors
         investor_id_map = {}
@@ -761,6 +883,16 @@ def run_scraper_pipeline(db: Session):
                 investor_repository.update(investor)
 
             investor_id_map[inv["name"]] = investor.id
+
+            upsert_source_record(
+                source_record_repository,
+                EntityType.INVESTOR,
+                "embedded_investors",
+                "embedded://app.scraper/RAW_INVESTORS",
+                slug,
+                dict(inv),
+                investor.id,
+            )
 
         # Remove canonical records no longer present in the current source data.
         for repository in (

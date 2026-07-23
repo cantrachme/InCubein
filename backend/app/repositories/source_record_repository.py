@@ -94,6 +94,32 @@ class SourceRecordRepository:
         result = self.db.execute(statement)
         return result.rowcount or 0
 
+    def get_latest_by_entity(
+        self,
+        entity_type: EntityType,
+        entity_id: uuid.UUID,
+    ) -> SourceRecord | None:
+        entity_id_column = {
+            EntityType.INCUBATOR: SourceRecord.incubator_id,
+            EntityType.STARTUP: SourceRecord.startup_id,
+            EntityType.MENTOR: SourceRecord.mentor_id,
+            EntityType.INVESTOR: SourceRecord.investor_id,
+        }[entity_type]
+        statement = (
+            select(SourceRecord)
+            .where(
+                SourceRecord.entity_type == entity_type,
+                entity_id_column == entity_id,
+            )
+            .order_by(
+                SourceRecord.ingested_at.desc(),
+                SourceRecord.created_at.desc(),
+                SourceRecord.id.desc(),
+            )
+            .limit(1)
+        )
+        return self.db.execute(statement).scalar_one_or_none()
+
     def list_by_entity(
         self,
         entity_type: EntityType,

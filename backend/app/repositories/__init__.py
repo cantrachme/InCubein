@@ -6,8 +6,12 @@ from app.repositories.incubein_application_repository import (
 from app.repositories.incubator_repository import IncubatorRepository
 from app.repositories.investor_repository import InvestorRepository
 from app.repositories.mentor_repository import MentorRepository
+from app.repositories.outreach_lead_repository import OutreachLeadRepository
 from app.repositories.pipeline_log_repository import PipelineLogRepository
 from app.repositories.relationship_repository import RelationshipRepository
+from app.repositories.scheduled_meeting_repository import (
+    ScheduledMeetingRepository,
+)
 from app.repositories.source_record_repository import SourceRecordRepository
 from app.repositories.startup_repository import StartupRepository
 from app.repositories.state_repository import StateRepository
@@ -19,8 +23,10 @@ __all__ = [
     "IncubatorRepository",
     "InvestorRepository",
     "MentorRepository",
+    "OutreachLeadRepository",
     "PipelineLogRepository",
     "RelationshipRepository",
+    "ScheduledMeetingRepository",
     "SourceRecordRepository",
     "StartupRepository",
     "StateRepository",

@@ -1,4 +1,3 @@
-import sqlite3
 import json
 import os
 import re
@@ -8,7 +7,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ecosystem.db")
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017/")
 
 _mongo_client = None
@@ -502,46 +500,6 @@ def get_db_connection():
     db = get_mongo_db()
     return MongoConnection(db)
 
-def init_db():
-    client = get_mongo_client()
-    db = client.get_database("ecosystem")
-    
-    # Automatic Migration from SQLite
-    sqlite_db_exists = os.path.exists(DB_PATH)
-    if sqlite_db_exists:
-        if db["incubators"].count_documents({}) == 0:
-            print("MongoDB is empty. Migrating data from SQLite...")
-            sqlite_conn = sqlite3.connect(DB_PATH)
-            sqlite_conn.row_factory = sqlite3.Row
-            sqlite_cursor = sqlite_conn.cursor()
-            
-            tables = [
-                "incubators", "startups", "mentors", "investors", 
-                "relationships", "pipeline_logs", "outreach_leads", 
-                "scheduled_meetings"
-            ]
-            for table in tables:
-                try:
-                    sqlite_cursor.execute(f"SELECT * FROM {table}")
-                    rows = [dict(r) for r in sqlite_cursor.fetchall()]
-                    if rows:
-                        list_cols = ["incubation_programs", "acceleration_programs", "lab_facilities", "focus_areas", "founders", "expertise", "investment_stage", "portfolio_startups"]
-                        for r in rows:
-                            for c in list_cols:
-                                if c in r and isinstance(r[c], str) and (r[c].startswith("[") or r[c].startswith("{")):
-                                    try:
-                                        r[c] = json.loads(r[c])
-                                    except:
-                                        pass
-                        print(f"Migrating {len(rows)} records into MongoDB collection '{table}'...")
-                        db[table].insert_many(rows)
-                except sqlite3.OperationalError as e:
-                    print(f"Table '{table}' does not exist in SQLite, skipping: {e}")
-            sqlite_conn.close()
-            print("Automatic migration to MongoDB complete!")
-            
-    log_pipeline_step("SYSTEM", "SUCCESS", "Ecosystem MongoDB collections initialized successfully.")
-
 def log_pipeline_step(stage, status, message):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -568,5 +526,3 @@ def clear_all_tables():
     cursor.execute("DELETE FROM pipeline_logs")
     cursor.execute("DELETE FROM outreach_leads")
     cursor.execute("DELETE FROM scheduled_meetings")
-
-init_db()

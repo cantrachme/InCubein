@@ -1057,6 +1057,11 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   };
 
   const handleSendFollowup = async (leadId, leadName, leadEmail) => {
+    if (followupsPaused) {
+      addLog("WARN", `Cannot send follow-up to ${leadName} (${leadEmail}) — follow-ups are permanently PAUSED. Resume to enable.`);
+      toast.warn("Follow-ups are permanently paused. Resume follow-ups in the Outreach Automation controls to send.");
+      return;
+    }
     addLog("OUTREACH", `Triggering outreach partnership follow-up email to ${leadName} (${leadEmail})...`);
     
     try {
@@ -1897,18 +1902,21 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                                   padding: "0.3rem 0.6rem", 
                                   fontSize: "0.75rem", 
                                   marginRight: "0.35rem",
-                                  background: "#e0f2fe",
-                                  border: "1px solid #0284c7",
-                                  color: "#0369a1",
+                                  background: followupsPaused ? "rgba(220, 38, 38, 0.1)" : "#e0f2fe",
+                                  border: followupsPaused ? "1px solid rgb(220, 38, 38)" : "1px solid #0284c7",
+                                  color: followupsPaused ? "rgb(185, 28, 28)" : "#0369a1",
                                   fontWeight: "600",
                                   display: "inline-flex",
                                   alignItems: "center",
-                                  gap: "0.25rem"
+                                  gap: "0.25rem",
+                                  opacity: followupsPaused ? 0.7 : 1,
+                                  cursor: followupsPaused ? "not-allowed" : "pointer"
                                 }}
+                                title={followupsPaused ? "Follow-ups are permanently paused. Resume in Outreach Automation controls." : `Send follow-up email #${(lead.followup_count || 0) + 1} to ${lead.incubator_name}`}
                                 onClick={(e) => { e.stopPropagation(); handleSendFollowup(lead.id, lead.incubator_name, lead.email); }}
                               >
                                 <Send size={12} />
-                                <span>Follow Up</span>
+                                <span>{followupsPaused ? "⏸ Follow Up" : "Follow Up"}</span>
                               </button>
                             )}
                             {lead.status === "Replied" && (

@@ -370,6 +370,8 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
 
   // Sync Interval state
   const [syncInterval, setSyncInterval] = useState(30);
+  const [scanningPaused, setScanningPaused] = useState(false);
+  const [followupsPaused, setFollowupsPaused] = useState(false);
 
   // OAuth states
   const [oauthConfigured, setOauthConfigured] = useState(false);
@@ -581,6 +583,12 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
           if (typeof configData.followup_delay === "number") {
             setFollowupDelay(configData.followup_delay);
           }
+          if (typeof configData.scanning_paused === "boolean") {
+            setScanningPaused(configData.scanning_paused);
+          }
+          if (typeof configData.followups_paused === "boolean") {
+            setFollowupsPaused(configData.followups_paused);
+          }
         }
       } catch (configErr) {
         console.error("Error fetching sync config:", configErr);
@@ -612,7 +620,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
       const res = await fetch("/api/outreach/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sync_interval: newVal, followup_delay: followupDelay })
+        body: JSON.stringify({ sync_interval: newVal, followup_delay: followupDelay, scanning_paused: scanningPaused, followups_paused: followupsPaused })
       });
       if (res.ok) {
         addLog("SYSTEM", `Auto scan interval successfully updated to ${newVal === 0 ? "Disabled" : `${newVal} seconds`}.`);
@@ -631,12 +639,54 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
       const res = await fetch("/api/outreach/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sync_interval: syncInterval, followup_delay: newVal })
+        body: JSON.stringify({ sync_interval: syncInterval, followup_delay: newVal, scanning_paused: scanningPaused, followups_paused: followupsPaused })
       });
       if (res.ok) {
         addLog("SYSTEM", `Follow-up delay successfully updated to ${newVal} seconds.`);
       } else {
         addLog("ERROR", "Failed to persist follow-up delay setting on backend.");
+      }
+    } catch (err) {
+      addLog("ERROR", "Failed to connect to backend configuration API.");
+    }
+  };
+
+  const handleToggleScanningPaused = async () => {
+    const newVal = !scanningPaused;
+    setScanningPaused(newVal);
+    addLog("SYSTEM", newVal ? "Permanently pausing inbox (IMAP) reply scanning..." : "Resuming inbox (IMAP) reply scanning...");
+    try {
+      const res = await fetch("/api/outreach/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sync_interval: syncInterval, followup_delay: followupDelay, scanning_paused: newVal, followups_paused: followupsPaused })
+      });
+      if (res.ok) {
+        addLog("SYSTEM", newVal ? "Inbox scanning is now permanently PAUSED." : "Inbox scanning has been RESUMED.");
+        toast.success(newVal ? "Inbox scanning paused" : "Inbox scanning resumed");
+      } else {
+        addLog("ERROR", "Failed to persist scan-pause setting on backend.");
+      }
+    } catch (err) {
+      addLog("ERROR", "Failed to connect to backend configuration API.");
+    }
+  };
+
+  const handleToggleFollowupsPaused = async () => {
+    const newVal = !followupsPaused;
+    setFollowupsPaused(newVal);
+    addLog("SYSTEM", newVal ? "Permanently pausing all follow-up email dispatch..." : "Resuming follow-up email dispatch...");
+    try {
+      const res = await fetch("/api/outreach/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sync_interval: syncInterval, followup_delay: followupDelay, scanning_paused: scanningPaused, followups_paused: newVal })
+      });
+      if (res.ok) {
+        addLog("SYSTEM", newVal ? "Follow-up emails are now permanently PAUSED." : "Follow-up email dispatch has been RESUMED.");
+        toast.success(newVal ? "Follow-ups paused" : "Follow-ups resumed");
+      } else {
+        addLog("ERROR", "Failed to persist follow-ups-pause setting on backend.");
       }
     } catch (err) {
       addLog("ERROR", "Failed to connect to backend configuration API.");
@@ -1033,20 +1083,25 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   const handleTriggerFollowups = async () => {
     setCheckingFollowups(true);
     addLog("SYSTEM", "Scanning for leads due for partnership follow-up emails...");
-    
+
     try {
       const res = await fetch("/api/outreach/send-followups", { method: "POST" });
       const data = await res.json();
-      
+
       if (res.ok) {
-        const count = data.followups_sent_count || 0;
-        addLog("SYSTEM", `Follow-up scan complete. Sent ${count} follow-up email(s).`);
-        if (count > 0 && data.dispatched) {
-          data.dispatched.forEach(item => {
-            addLog("OUTREACH", `Dispatched follow-up #${item.followup_number} to ${item.incubator_name} (${item.email}). Status: ${item.status}.`);
-          });
+        if (data.status === "paused") {
+          addLog("SYSTEM", `Follow-ups PAUSED: ${data.message || "Dispatch skipped."}`);
+          toast.warning("Follow-ups are currently paused");
+        } else {
+          const count = data.followups_sent_count || 0;
+          addLog("SYSTEM", `Follow-up scan complete. Sent ${count} follow-up email(s).`);
+          if (count > 0 && data.dispatched) {
+            data.dispatched.forEach(item => {
+              addLog("OUTREACH", `Dispatched follow-up #${item.followup_number} to ${item.incubator_name} (${item.email}). Status: ${item.status}.`);
+            });
+          }
+          await fetchData();
         }
-        await fetchData();
       } else {
         addLog("ERROR", `Follow-up scan failed: ${data.detail || "Server error"}`);
       }
@@ -1060,28 +1115,33 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   const handleCheckReplies = async () => {
     setCheckingReplies(true);
     addLog("SYSTEM", "Connecting to IMAP inbox to scan for unread responses...");
-    
+
     try {
       const res = await fetch("/api/outreach/check-replies", { method: "POST" });
       const data = await res.json();
-      
+
       if (res.ok) {
-        const newReplies = data.new_replies || [];
-        if (newReplies.length > 0) {
-          addLog("SYSTEM", `IMAP Scan complete. Processed ${newReplies.length} new reply/replies.`);
-          newReplies.forEach(reply => {
-            addLog("INBOX", `Reply matched from ${reply.incubator_name} (${reply.email}): "${reply.reply_text.substring(0, 60)}..."`);
-            addLog("AI_ENGINE", `Gemini Classification: Intent=${reply.intent.toUpperCase()}, Interest Score=${reply.score}/100`);
-            if (reply.status === "Meeting Scheduled") {
-              addLog("CALENDAR", `Score > 80. Google Calendar Meeting synchronized with Google Meet link.`);
-            } else {
-              addLog("SYSTEM", `Score (${reply.score}) below threshold. Reply recorded.`);
-            }
-          });
+        if (data.status === "paused") {
+          addLog("SYSTEM", `Scanning PAUSED: ${data.message || "IMAP scan skipped."}`);
+          toast.warning("Inbox scanning is currently paused");
         } else {
-          addLog("SYSTEM", "IMAP Scan complete. No new unread replies from campaign leads detected.");
+          const newReplies = data.new_replies || [];
+          if (newReplies.length > 0) {
+            addLog("SYSTEM", `IMAP Scan complete. Processed ${newReplies.length} new reply/replies.`);
+            newReplies.forEach(reply => {
+              addLog("INBOX", `Reply matched from ${reply.incubator_name} (${reply.email}): "${reply.reply_text.substring(0, 60)}..."`);
+              addLog("AI_ENGINE", `Gemini Classification: Intent=${reply.intent.toUpperCase()}, Interest Score=${reply.score}/100`);
+              if (reply.status === "Meeting Scheduled") {
+                addLog("CALENDAR", `Score > 80. Google Calendar Meeting synchronized with Google Meet link.`);
+              } else {
+                addLog("SYSTEM", `Score (${reply.score}) below threshold. Reply recorded.`);
+              }
+            });
+          } else {
+            addLog("SYSTEM", "IMAP Scan complete. No new unread replies from campaign leads detected.");
+          }
+          await fetchData();
         }
-        await fetchData();
       } else {
         addLog("ERROR", `Scan failed: ${data.detail || "Server error"}`);
       }
@@ -1495,6 +1555,50 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                     <option value={86400 * 7}>7 Days</option>
                   </select>
                 </div>
+
+                <button
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "0.35rem",
+                    padding: "0.4rem 0.75rem",
+                    fontSize: "0.8rem",
+                    fontWeight: "700",
+                    height: "32px",
+                    borderRadius: "40px",
+                    border: scanningPaused ? "1px solid rgb(220, 38, 38)" : "1px solid var(--border-color)",
+                    background: scanningPaused ? "rgba(220, 38, 38, 0.1)" : "rgba(16, 185, 129, 0.1)",
+                    color: scanningPaused ? "rgb(185, 28, 28)" : "rgb(6, 95, 70)",
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                  onClick={handleToggleScanningPaused}
+                  title="Permanently pause/resume inbox reply scanning (IMAP)"
+                >
+                  {scanningPaused ? "⏸ Inbox Scan: PAUSED" : "▶ Inbox Scan: Active"}
+                </button>
+
+                <button
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "0.35rem",
+                    padding: "0.4rem 0.75rem",
+                    fontSize: "0.8rem",
+                    fontWeight: "700",
+                    height: "32px",
+                    borderRadius: "40px",
+                    border: followupsPaused ? "1px solid rgb(220, 38, 38)" : "1px solid var(--border-color)",
+                    background: followupsPaused ? "rgba(220, 38, 38, 0.1)" : "rgba(139, 92, 246, 0.1)",
+                    color: followupsPaused ? "rgb(185, 28, 28)" : "rgb(107, 33, 168)",
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                  onClick={handleToggleFollowupsPaused}
+                  title="Permanently pause/resume all automated + manually triggered follow-up emails"
+                >
+                  {followupsPaused ? "⏸ Follow-ups: PAUSED" : "▶ Follow-ups: Active"}
+                </button>
 
                 <button 
                   className="btn btn-primary"

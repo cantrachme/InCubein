@@ -2091,6 +2091,9 @@ class FollowupEmailRequest(BaseModel):
 
 @app.post("/api/outreach/send-followup-single")
 def api_send_followup_single(req: FollowupEmailRequest):
+    global FOLLOWUPS_PAUSED
+    if FOLLOWUPS_PAUSED:
+        raise HTTPException(status_code=400, detail="Follow-up emails are permanently paused. Resume follow-ups in the Outreach Automation controls to proceed.")
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM outreach_leads WHERE id = ?", (req.lead_id,))
@@ -2125,7 +2128,15 @@ def api_send_followup_single(req: FollowupEmailRequest):
 @app.post("/api/outreach/send-followups")
 def api_send_followups():
     from datetime import datetime
-    global FOLLOWUP_DELAY
+    global FOLLOWUP_DELAY, FOLLOWUPS_PAUSED
+    if FOLLOWUPS_PAUSED:
+        return {
+            "status": "paused",
+            "checked_at": datetime.now().isoformat(),
+            "followups_sent_count": 0,
+            "dispatched": [],
+            "message": "Follow-up emails are permanently paused. Resume follow-ups in the Outreach Automation controls to proceed."
+        }
     
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -3253,15 +3264,21 @@ import time
 
 def start_imap_checking_loop():
     def loop():
-        global IMAP_SYNC_INTERVAL
+        global IMAP_SYNC_INTERVAL, SCANNING_PAUSED, FOLLOWUPS_PAUSED
         while True:
             try:
                 if IMAP_SYNC_INTERVAL > 0:
-                    check_imap_replies_sync()
-                    check_and_send_followups_sync()
+                    if not SCANNING_PAUSED:
+                        check_imap_replies_sync()
+                    else:
+                        print("[Background] Inbox scanning paused; skipping IMAP check cycle.")
+                    if not FOLLOWUPS_PAUSED:
+                        check_and_send_followups_sync()
+                    else:
+                        print("[Background] Follow-ups paused; skipping follow-up dispatch cycle.")
             except Exception as e:
                 print("IMAP background checker loop error:", e)
-            
+
             sleep_time = max(5, IMAP_SYNC_INTERVAL) if IMAP_SYNC_INTERVAL > 0 else 5
             time.sleep(sleep_time)
             

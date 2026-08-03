@@ -1418,6 +1418,34 @@ def get_smtp_config(account: Optional[str] = None) -> dict:
         "is_smtp_ready": is_smtp_ready,
     }
 
+def get_imap_config(account: Optional[str] = None) -> dict:
+    if account and account.strip() not in ("", "default"):
+        suffix = account.strip()
+        imap_host = os.environ.get(f"IMAP_HOST{suffix}")
+        imap_port = os.environ.get(f"IMAP_PORT{suffix}", "993")
+        imap_user = os.environ.get(f"IMAP_USER{suffix}")
+        imap_pass = os.environ.get(f"IMAP_PASS{suffix}")
+    else:
+        imap_host = os.environ.get("IMAP_HOST")
+        imap_port = os.environ.get("IMAP_PORT", "993")
+        imap_user = os.environ.get("IMAP_USER")
+        imap_pass = os.environ.get("IMAP_PASS")
+
+    if imap_user:
+        imap_user = imap_user.strip().strip('"').strip("'")
+    if imap_pass:
+        imap_pass = imap_pass.strip().strip('"').strip("'")
+
+    is_imap_ready = bool(imap_host and imap_user and imap_pass and "your_email" not in (imap_user or ""))
+
+    return {
+        "imap_host": imap_host,
+        "imap_port": imap_port,
+        "imap_user": imap_user,
+        "imap_pass": imap_pass,
+        "is_imap_ready": is_imap_ready,
+    }
+
 # Pydantic models for outreach
 class OutreachEmailRequest(BaseModel):
     lead_id: str
@@ -2498,24 +2526,21 @@ def extract_email_address(from_header):
     # Remove surrounding quotes if any
     return from_header.strip().strip('"').strip("'").lower()
 
-def check_imap_replies_sync():
+def check_imap_replies_sync(account: Optional[str] = None):
     import imaplib
     import email
     from email.header import decode_header
     import os
     
-    imap_host = os.environ.get("IMAP_HOST")
-    imap_port = os.environ.get("IMAP_PORT", "993")
-    imap_user = os.environ.get("IMAP_USER")
-    imap_pass = os.environ.get("IMAP_PASS")
-    
-    if imap_user:
-        imap_user = imap_user.strip().strip('"').strip("'")
-    if imap_pass:
-        imap_pass = imap_pass.strip().strip('"').strip("'")
+    imap_cfg = get_imap_config(account)
+    imap_host = imap_cfg["imap_host"]
+    imap_port = imap_cfg["imap_port"]
+    imap_user = imap_cfg["imap_user"]
+    imap_pass = imap_cfg["imap_pass"]
         
-    if not (imap_host and imap_user and imap_pass) or "your_email" in imap_user:
-        print("IMAP parameters not configured or using placeholders. Skipping IMAP scan.")
+    if not imap_cfg["is_imap_ready"]:
+        label = imap_user or (f"account {account}" if account else "default account")
+        print(f"IMAP parameters not configured or using placeholders for {label}. Skipping IMAP scan.")
         return []
         
     processed_replies = []
@@ -3080,14 +3105,18 @@ def update_outreach_config(cfg: OutreachConfig):
         "followups_paused": FOLLOWUPS_PAUSED,
     }
 
+class CheckRepliesRequest(BaseModel):
+    mail_account: Optional[str] = None
+
 @app.post("/api/outreach/check-replies")
-def trigger_check_replies():
+def trigger_check_replies(req: Optional[CheckRepliesRequest] = None):
     from datetime import datetime
     global SCANNING_PAUSED
     if SCANNING_PAUSED:
         return {"status": "paused", "checked_at": datetime.now().isoformat(), "new_replies": [], "message": "Inbox scanning is permanently paused. Resume scanning in the Outreach Automation controls to proceed."}
-    replies = check_imap_replies_sync()
-    return {"status": "success", "checked_at": datetime.now().isoformat(), "new_replies": replies}
+    account = req.mail_account if req else None
+    replies = check_imap_replies_sync(account)
+    return {"status": "success", "checked_at": datetime.now().isoformat(), "new_replies": replies, "mail_account": account or "default"}
 
 class ScheduleMeetingRequest(BaseModel):
     lead_id: str
@@ -3269,7 +3298,8 @@ def start_imap_checking_loop():
             try:
                 if IMAP_SYNC_INTERVAL > 0:
                     if not SCANNING_PAUSED:
-                        check_imap_replies_sync()
+                        for acct in [None, "1"]:
+                            check_imap_replies_sync(acct)
                     else:
                         print("[Background] Inbox scanning paused; skipping IMAP check cycle.")
                     if not FOLLOWUPS_PAUSED:

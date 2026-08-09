@@ -1,6 +1,7 @@
 import os
 import io
 import re
+import time
 import uuid
 import datetime as _dt
 from datetime import datetime
@@ -12,7 +13,7 @@ from ..schemas.incubein import (
     UpdatePriorityRequest,
     AddCohortToEcosystemRequest,
     ScrapeEnrichRequest,
-    BatchEnrichRequest,
+    SaveEnrichedRequest,
     AddIncubatorsToEcosystemRequest,
     MilestoneRequest,
 )
@@ -404,6 +405,118 @@ def clear_startup_campaigns():
         raise ServiceError(str(e))
 
 
+def process_seed_support_rejections(req):
+    """Dispatches the seed-support cohort rejection + pre-incubation invite
+    email to non-shortlisted startups and registers them in outreach leads.
+
+    Eligible = applications whose priority is NOT 'High' (i.e. not shortlisted
+    for the seed support round). Operators can restrict to specific app ids.
+    """
+    try:
+        db = get_mongo_db()
+        from bson import ObjectId
+
+        if req.all_non_shortlisted:
+            query = {"priority": {"$ne": "High"}}
+        else:
+            parsed_ids = []
+            for aid in req.app_ids:
+                try:
+                    parsed_ids.append(ObjectId(aid))
+                except Exception:
+                    pass
+            query = {"_id": {"$in": parsed_ids}, "priority": {"$ne": "High"}}
+
+        cursor = list(db["incubein_applications"].find(query))
+
+        from .templates import get_email_template, get_default_template, render_template
+        from .settings import get_settings
+        from .email import get_smtp_config, send_outreach_single
+        from .email_logs import log_email_send
+
+        tpl = get_email_template("startup_seed_rejection") or get_default_template("startups")
+        smtp_cfg = get_smtp_config()
+        sender_email = smtp_cfg["sender_email"]
+        is_smtp_ready = smtp_cfg["is_smtp_ready"]
+
+        sent_count = 0
+        skipped_count = 0
+        registered_count = 0
+
+        conn = get_db_connection()
+        db_cursor = conn.cursor()
+
+        for doc in cursor:
+            enc = doc.get("encrypted_fields", {})
+            email = decrypt_val(enc.get("email", ""))
+            name = doc.get("startup_name") or decrypt_val(enc.get("name", "")) or "Startup"
+
+            if not email:
+                skipped_count += 1
+                continue
+
+            # Register / reset the outreach lead
+            db_cursor.execute("SELECT id FROM outreach_leads WHERE email = ?", (email,))
+            existing = db_cursor.fetchone()
+            if existing:
+                db_cursor.execute('''
+                    UPDATE outreach_leads
+                    SET status = 'Draft', incubator_id = 'incubein_cohort',
+                        sent_at = NULL, reply_text = NULL, reply_detected_at = NULL,
+                        intent_classification = NULL, lead_score = 0, notes = ?
+                    WHERE id = ?
+                ''', ("Seed Support Cohort: Rejection + Pre-Incubation Invite", existing["id"]))
+            else:
+                lead_id = f"lead_{uuid.uuid4().hex[:8]}"
+                db_cursor.execute('''
+                    INSERT INTO outreach_leads (
+                        id, incubator_id, incubator_name, email, status, lead_score,
+                        contact_count, last_contact_reason, next_action_date, notes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (lead_id, 'incubein_cohort', name, email, 'Draft', 0, 0, 'None', '',
+                      "Seed Support Cohort: Rejection + Pre-Incubation Invite"))
+            registered_count += 1
+
+            # Render and send
+            subject = ""
+            body_text = ""
+            if tpl:
+                rendered = render_template(tpl, {"StartupName": name})
+                subject = rendered["subject"]
+                body_text = rendered["body"]
+
+            email_sent = False
+            if is_smtp_ready and subject and body_text:
+                email_sent = send_outreach_single(smtp_cfg, sender_email, email, subject, body_text, cc=tpl.get("cc") or "")
+                if email_sent:
+                    sent_count += 1
+            else:
+                skipped_count += 1
+
+            log_email_send(
+                recipient_email=email,
+                recipient_name=name,
+                subject=subject or "Regarding Your Application to the Incubein Startup Seed Support Cohort",
+                template_key=tpl.get("key", "startup_seed_rejection") if tpl else "startup_seed_rejection",
+                kind="seed_rejection",
+                status="sent" if email_sent else "simulated",
+            )
+
+        conn.commit()
+        conn.close()
+
+        return {
+            "status": "success",
+            "message": f"Processed {len(cursor)} non-shortlisted startup(s): {registered_count} registered in outreach, {sent_count} emails sent.",
+            "processed_count": len(cursor),
+            "registered_count": registered_count,
+            "sent_count": sent_count,
+            "skipped_count": skipped_count,
+        }
+    except Exception as e:
+        raise ServiceError(str(e))
+
+
 def clear_incubators_directory():
     try:
         db = get_mongo_db()
@@ -436,15 +549,261 @@ def scrape_and_enrich_entity(req: ScrapeEnrichRequest):
         raise ServiceError(f"Data enrichment failed: {str(e)}")
 
 
-def batch_enrich_entities(req: BatchEnrichRequest):
+def batch_enrich_entities(req):
+    """Mass-enrich a large list of entity names. Results are persisted to the
+    `enrichment_results` collection so large batches can be processed and
+    reviewed before saving into the directory."""
+    try:
+        rows = [{"name": n, "city": "", "state": ""} for n in (req.entity_names or [])]
+        for r in rows:
+            if req.city:
+                r["city"] = req.city
+            if req.state:
+                r["state"] = req.state
+        return _run_batch_enrichment(rows, req.entity_type)
+    except Exception as e:
+        raise ServiceError(str(e))
+
+
+def _run_batch_enrichment(rows, entity_type):
+    """Runs enrichment over a list of rows: [{name, city, state}]. Persists
+    results to the `enrichment_results` collection and returns per-row errors."""
     try:
         from .enricher import enrich_entity_data
+
+        unique_rows = []
+        seen = set()
+        for r in rows:
+            name = (r.get("name") or "").strip()
+            if not name:
+                continue
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_rows.append(r)
+        rows = unique_rows[:500]  # Hard safety cap for one request
+        if not rows:
+            return {"status": "error", "message": "No entity names provided."}
+
+        db = get_mongo_db()
+        batch_id = f"enrich_{uuid.uuid4().hex[:8]}"
         results = []
-        for name in req.entity_names[:15]:  # Limit batch size to 15 for responsiveness
-            if name.strip():
-                res = enrich_entity_data(entity_name=name, entity_type=req.entity_type)
+        errors = []
+        now = datetime.now().isoformat()
+
+        for i, row in enumerate(rows):
+            name = row["name"]
+            try:
+                res = enrich_entity_data(
+                    entity_name=name,
+                    entity_type=entity_type,
+                    user_city=row.get("city") or "",
+                    user_state=row.get("state") or "",
+                )
+                res["batch_id"] = batch_id
+                res["row_idx"] = i
+                res["created_at"] = now
                 results.append(res)
-        return {"status": "success", "results": results, "count": len(results)}
+            except Exception as e:
+                errors.append({"name": name, "error": str(e)})
+
+            # Throttle between searches to avoid rate-limiting
+            if i < len(rows) - 1 and i % 3 == 2:
+                time.sleep(0.4)
+
+        if results:
+            db["enrichment_results"].insert_many(results)
+
+        return {
+            "status": "success",
+            "batch_id": batch_id,
+            "results": results,
+            "count": len(results),
+            "errors": errors,
+            "message": f"Enriched {len(results)} of {len(rows)} entities.",
+        }
+    except Exception as e:
+        raise ServiceError(str(e))
+
+
+def enrich_from_excel(contents: bytes, entity_type: str = "incubator", city: str = "", state: str = ""):
+    """Reads entity rows from an uploaded Excel file (first sheet) and runs
+    batch enrichment. A column named like 'name'/'incubator'/'startup'/'company'
+    is preferred; otherwise the first non-empty column is used. Optional
+    city/state columns are read as per-row hints, and extra/missing columns
+    are tolerated."""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(contents), data_only=True)
+        sheet = wb.active
+        if sheet is None:
+            return {"status": "error", "message": "Excel file contains no sheets."}
+
+        # Normalize header row (first non-empty row)
+        header_row_idx = 1
+        for r in range(1, sheet.max_row + 1):
+            values = [sheet.cell(row=r, column=c).value for c in range(1, sheet.max_column + 1)]
+            if any(v is not None and str(v).strip() for v in values):
+                header_row_idx = r
+                break
+        headers = []
+        for cell in sheet[header_row_idx]:
+            headers.append(str(cell.value).strip().lower() if cell.value is not None else "")
+
+        name_col = None
+        city_col = None
+        state_col = None
+        for i, h in enumerate(headers):
+            if any(k in h for k in ["name", "incubator", "startup", "company", "entity", "hub", "center", "tbi", "org"]):
+                name_col = i
+                break
+        for i, h in enumerate(headers):
+            if name_col is not None and i == name_col:
+                continue
+            if "city" in h or "location" in h:
+                city_col = i
+                break
+        for i, h in enumerate(headers):
+            if name_col is not None and i == name_col:
+                continue
+            if city_col is not None and i == city_col:
+                continue
+            if "state" in h or "province" in h:
+                state_col = i
+                break
+        if name_col is None:
+            for i, h in enumerate(headers):
+                if h:
+                    name_col = i
+                    break
+        if name_col is None:
+            return {"status": "error", "message": "Could not locate an entity name column."}
+
+        def _cell_text(row_idx, col):
+            if col is None:
+                return ""
+            val = sheet.cell(row=row_idx, column=col + 1).value
+            if val is None:
+                return ""
+            txt = str(val).strip()
+            if txt.lower() in ["none", "null", "n/a", "na", "-"]:
+                return ""
+            return txt
+
+        rows = []
+        for row_idx in range(header_row_idx + 1, sheet.max_row + 1):
+            name = _cell_text(row_idx, name_col)
+            if not name:
+                continue
+            rows.append({
+                "name": name,
+                "city": _cell_text(row_idx, city_col) or city,
+                "state": _cell_text(row_idx, state_col) or state,
+            })
+
+        return _run_batch_enrichment(rows, entity_type)
+    except ServiceError:
+        raise
+    except Exception as e:
+        raise ServiceError(f"Failed to enrich from excel: {str(e)}")
+
+
+def save_enriched_to_db(req):
+    """Saves previously-enriched results into the startups / incubators
+    directory collections. Skips records whose name already exists."""
+    try:
+        from .templates import get_default_template
+
+        entity_type = req.entity_type
+        results = req.results or []
+        if not results:
+            return {"status": "error", "message": "No enriched results provided."}
+
+        db = get_mongo_db()
+        coll = db["startups"] if entity_type == "startup" else db["incubators"]
+
+        inserted_count = 0
+        skipped_count = 0
+        now = datetime.now().isoformat()
+
+        for res in results:
+            name = (res.get("entity_name") or res.get("startup_name") or res.get("name") or "").strip()
+            if not name:
+                skipped_count += 1
+                continue
+
+            if entity_type == "startup":
+                dup = coll.find_one({"startup_name": name})
+                if dup:
+                    skipped_count += 1
+                    continue
+                max_id = 1
+                try:
+                    ids = []
+                    for doc in coll.find({}, {"id": 1}):
+                        v = doc.get("id")
+                        if v:
+                            if isinstance(v, int):
+                                ids.append(v)
+                            elif isinstance(v, str) and v.isdigit():
+                                ids.append(int(v))
+                    if ids:
+                        max_id = max(ids) + 1
+                except Exception:
+                    pass
+                focus_areas = res.get("focus_areas") or []
+                if isinstance(focus_areas, list):
+                    focus_areas = ", ".join(focus_areas)
+                record = {
+                    "id": str(max_id),
+                    "startup_name": name,
+                    "sector": focus_areas or "General",
+                    "founders": res.get("founder") or res.get("founders") or "",
+                    "website": res.get("website") or "",
+                    "funding_stage": res.get("stage") or "Active",
+                    "hq_city": res.get("city") or "",
+                    "email": res.get("email") or "",
+                    "description": res.get("address") or res.get("description") or "",
+                    "incubator_id": "enrichment_upload",
+                    "confidence_score": res.get("confidence_score"),
+                    "status": "Enriched",
+                    "source_url": "Enrichment Hub",
+                    "last_updated": now,
+                }
+                coll.insert_one(record)
+                inserted_count += 1
+            else:
+                dup = coll.find_one({"name": name})
+                if dup:
+                    skipped_count += 1
+                    continue
+                focus_areas = res.get("focus_areas") or []
+                if isinstance(focus_areas, list):
+                    focus_areas = ", ".join(focus_areas)
+                record = {
+                    "id": f"inc_{uuid.uuid4().hex[:8]}",
+                    "name": name,
+                    "city": res.get("city") or "",
+                    "state": res.get("state") or "",
+                    "email": res.get("email") or "",
+                    "website": res.get("website") or "",
+                    "focus_areas": focus_areas,
+                    "description": res.get("address") or res.get("description") or "",
+                    "confidence_score": res.get("confidence_score"),
+                    "status": "resolved",
+                    "source_url": "Enrichment Hub",
+                    "last_updated": now,
+                }
+                coll.insert_one(record)
+                inserted_count += 1
+
+        return {
+            "status": "success",
+            "message": f"Saved {inserted_count} {entity_type}(s) to the directory ({skipped_count} skipped as duplicates/invalid).",
+            "inserted_count": inserted_count,
+            "skipped_count": skipped_count,
+        }
     except Exception as e:
         raise ServiceError(str(e))
 

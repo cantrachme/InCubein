@@ -13,6 +13,7 @@ from .api.routes.ai import router as ai_router
 from .api.routes.outreach import router as outreach_router
 from .api.routes.meetings import router as meetings_router
 from .api.routes.incubein import router as incubein_router
+from .api.routes.config import router as config_router
 from .services import start_imap_checking_loop
 
 app = FastAPI(title="Indian Startup Ecosystem Intelligence Platform API")
@@ -31,6 +32,7 @@ app.include_router(ai_router)
 app.include_router(outreach_router)
 app.include_router(meetings_router)
 app.include_router(incubein_router)
+app.include_router(config_router)
 
 
 @app.on_event("startup")

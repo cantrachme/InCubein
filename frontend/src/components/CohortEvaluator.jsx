@@ -19,7 +19,8 @@ import {
   BarChart2,
   X,
   Send,
-  Database
+  Database,
+  Mail
 } from "lucide-react";
 import { toast } from "react-toastify";
 
@@ -44,6 +45,7 @@ export default function CohortEvaluator() {
   const [showCompareModal, setShowCompareModal] = useState(false);
   const [exportingDb, setExportingDb] = useState(false);
   const [exportingCamp, setExportingCamp] = useState(false);
+  const [seedRejecting, setSeedRejecting] = useState(false);
 
   const fetchApplications = async () => {
     setLoading(true);
@@ -196,6 +198,37 @@ export default function CohortEvaluator() {
       toast.error("Network error.");
     } finally {
       setExportingCamp(false);
+    }
+  };
+
+  const handleSeedSupportRejections = async () => {
+    if (entityMode !== "startup") return;
+    const nonShortlisted = applications.filter(app => (app.priority || "Medium") !== "High");
+    const ids = checkedIds.length > 0 ? checkedIds : [];
+    const count = ids.length > 0 ? ids.length : nonShortlisted.length;
+    if (count === 0) {
+      toast.warning("No non-shortlisted startups to notify.");
+      return;
+    }
+    if (!window.confirm(`Send the seed-support rejection + pre-incubation invite email to ${count} non-shortlisted startup(s)?`)) return;
+
+    setSeedRejecting(true);
+    try {
+      const res = await fetch("/api/incubein/seed-support/reject", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ app_ids: ids, all_non_shortlisted: ids.length === 0 }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success(data.message);
+      } else {
+        toast.error(data.detail || "Failed to send rejections.");
+      }
+    } catch (e) {
+      toast.error("Network error.");
+    } finally {
+      setSeedRejecting(false);
     }
   };
 
@@ -445,6 +478,17 @@ export default function CohortEvaluator() {
                 <Send size={14} style={{ marginRight: "6px" }} />
                 Add All to Campaign
               </button>
+              {entityMode === "startup" && (
+                <button
+                  className="btn btn-secondary"
+                  onClick={handleSeedSupportRejections}
+                  disabled={seedRejecting}
+                  title="Send the seed-support rejection + pre-incubation invite email to non-shortlisted startups (priority != High) and register them in outreach leads."
+                >
+                  <Mail size={14} style={{ marginRight: "6px" }} />
+                  {seedRejecting ? "Sending..." : `Notify Non-Shortlisted${checkedIds.length > 0 ? ` (${checkedIds.length})` : ""}`}
+                </button>
+              )}
               <button className="btn btn-secondary" onClick={handleClear} style={{ color: "var(--danger)" }}>
                 <Trash2 size={14} style={{ marginRight: "6px" }} />
                 Reset

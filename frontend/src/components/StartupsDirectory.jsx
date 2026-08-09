@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "react-toastify";
-import { Search, MapPin, Globe, Mail, Send, X, ExternalLink, ShieldCheck, User, Trash2 } from "lucide-react";
+import { Search, MapPin, Globe, Mail, Send, X, ExternalLink, ShieldCheck, User, Trash2, Upload } from "lucide-react";
 
 export default function StartupsDirectory() {
   const [startups, setStartups] = useState([]);
@@ -16,6 +16,37 @@ export default function StartupsDirectory() {
   // Drawer state
   const [activeDrawerStartup, setActiveDrawerStartup] = useState(null);
   const [addingToCampaign, setAddingToCampaign] = useState(false);
+  const [uploading, setUploading] = useState(false);
+
+  const handleUploadExcel = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = "";
+
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("entity_type", "startup");
+
+    setUploading(true);
+    try {
+      const res = await fetch("/api/directory/upload", {
+        method: "POST",
+        body: formData,
+      });
+      const result = await res.json();
+      if (res.ok && result.status === "success") {
+        toast.success(result.message);
+        fetchStartups();
+      } else {
+        toast.error(result.detail || result.message || "Failed to import Excel file.");
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Network error during file upload.");
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const handleClearDirectory = async () => {
     if (!window.confirm("Are you sure you want to clear the entire Startups Directory? This is irreversible.")) return;
@@ -129,16 +160,29 @@ export default function StartupsDirectory() {
             Browse, search, and manage evaluated and ecosystem startups.
           </p>
         </div>
-        {startups.length > 0 && (
-          <button
-            className="btn btn-secondary"
-            onClick={handleClearDirectory}
-            style={{ color: "var(--danger)" }}
-          >
-            <Trash2 size={14} style={{ marginRight: "6px" }} />
-            Reset Directory
-          </button>
-        )}
+        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+          <label className={`btn btn-secondary ${uploading ? "disabled" : ""}`} style={{ cursor: "pointer", margin: 0 }}>
+            <Upload size={14} style={{ marginRight: "6px" }} />
+            {uploading ? "Importing..." : "Upload Excel"}
+            <input
+              type="file"
+              accept=".xlsx, .xls"
+              onChange={handleUploadExcel}
+              disabled={uploading}
+              style={{ display: "none" }}
+            />
+          </label>
+          {startups.length > 0 && (
+            <button
+              className="btn btn-secondary"
+              onClick={handleClearDirectory}
+              style={{ color: "var(--danger)" }}
+            >
+              <Trash2 size={14} style={{ marginRight: "6px" }} />
+              Reset Directory
+            </button>
+          )}
+        </div>
       </div>
 
       {/* ─── Control Header ─────────────────────────────────────── */}
@@ -250,11 +294,8 @@ export default function StartupsDirectory() {
                       onClick={() => setActiveDrawerStartup(st)}
                       style={{
                         background: isTop3 ? "rgba(16, 185, 129, 0.05)" : "white",
-                        borderWidth: "1px",
-                        borderStyle: "solid",
-                        borderColor: "var(--border-color)",
-                        borderLeftColor: isTop3 ? "#10b981" : "var(--border-color)",
-                        borderLeftWidth: isTop3 ? "4px" : "1px",
+                        border: "1px solid var(--border-color)",
+                        boxShadow: isTop3 ? "inset 3px 0 0 0 #10b981" : "none",
                         borderRadius: "var(--radius-lg)",
                         padding: "12px",
                         cursor: "pointer",

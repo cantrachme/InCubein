@@ -9,6 +9,7 @@ class OutreachEmailRequest(BaseModel):
     body: Optional[str] = None
     cc: Optional[str] = None
     mail_account: Optional[str] = None
+    template_id: Optional[str] = None
 
 
 class OutreachReplyRequest(BaseModel):
@@ -50,6 +51,7 @@ class MassSendRequest(BaseModel):
     body: Optional[str] = None
     cc: Optional[str] = None
     mail_account: Optional[str] = None
+    template_id: Optional[str] = None
 
 
 class FollowupEmailRequest(BaseModel):

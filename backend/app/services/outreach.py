@@ -24,6 +24,9 @@ from ..schemas.outreach import (
     OutreachConfig,
 )
 from .email import get_smtp_config, send_outreach_single, send_plain_email
+from .settings import get_settings, get_setting, update_settings
+from .templates import get_email_template, get_default_template, render_template
+from .email_logs import log_email_send
 
 
 def seed_outreach_leads():
@@ -172,6 +175,34 @@ def clean_email_reply(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _pick_template(entity_kind: str, template_key: str = None) -> dict:
+    """Resolves the email template for an entity (startup/incubator).
+
+    Priority: explicitly chosen template key -> configured default for the
+    kind -> first default template of the matching category.
+    """
+    tpl = None
+    if template_key:
+        tpl = get_email_template(template_key)
+    if not tpl:
+        if entity_kind == "startup":
+            tpl = get_email_template(get_setting("default_template_startup", "")) or get_default_template("startups")
+        else:
+            tpl = get_email_template(get_setting("default_template_incubator", "")) or get_default_template("incubators")
+    return tpl
+
+
+def _context_for_entity(lead: dict, extra: dict = None) -> dict:
+    context = {
+        "StartupName": lead.get("incubator_name", ""),
+        "IncubatorName": lead.get("incubator_name", ""),
+        "EntityName": lead.get("incubator_name", ""),
+    }
+    if extra:
+        context.update(extra)
+    return context
+
+
 def get_lead_timeline(lead_id: str):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -305,49 +336,24 @@ def trigger_outreach_email(req: OutreachEmailRequest):
 
     lead_name = lead["incubator_name"]
     is_startup = lead["incubator_id"] == "incubein_cohort"
-    if is_startup:
-        default_subject = "Introduction to Incubein Foundation"
-        default_body = f"""Hello {lead_name},
 
-Greetings from Incubein Foundation RTM Nagpur University.
+    subject = req.subject
+    body_text = req.body
+    template_key = getattr(req, "template_id", None) or ""
 
-We came across your startup and were impressed by the work you're building. At Incubein Foundation, we work closely with early-stage and growth-stage startups by providing the right ecosystem, mentorship, and resources to help them scale.
+    if not subject or not body_text:
+        entity_kind = "startup" if is_startup else "incubator"
+        tpl = _pick_template(entity_kind, template_key)
+        if tpl:
+            rendered = render_template(tpl, _context_for_entity(lead))
+            subject = subject or rendered["subject"]
+            body_text = body_text or rendered["body"]
+            if not template_key:
+                template_key = tpl.get("key", "")
 
-We would love to learn more about {lead_name}, understand your current challenges and growth plans, and explore how Incubein Foundation can support your journey.
-
-If you're available, we'd be happy to schedule a 30-minute Google Meet at your convenience.
-
-Please let us know a suitable date and time that works for you, and we'll be happy to coordinate.
-
-Warm regards,
-
-Team Incubein Foundation
-Incubein Foundation - RTMNU Business Incubation Centre
-Nagpur, Maharashtra
-Email: teamincubein@gmail.com
-Website: www.incubein.com"""
-    else:
-        default_subject = "Introduction to Incubein Foundation"
-        default_body = f"""Hello {lead_name},
-
-Greetings from Incubein Foundation RTM Nagpur University.
-
-We came across your incubation centre and were impressed by the impactful work you're doing for the startup ecosystem. We would love to explore a potential Strategic Cooperation and Academic Collaboration between Incubein Foundation and {lead_name}.
-
-If you're available, we'd be happy to schedule a 30-minute Google Meet at your convenience.
-
-Please let us know a suitable date and time that works for you, and we'll be happy to coordinate.
-
-Warm regards,
-
-Team Incubein Foundation
-Incubein Foundation - RTMNU Business Incubation Centre
-Nagpur, Maharashtra
-Email: teamincubein@gmail.com
-Website: www.incubein.com"""
-
-    subject = req.subject or default_subject
-    body_text = req.body or default_body
+    if not subject or not body_text:
+        conn.close()
+        raise BadRequestError("No subject/body provided and no matching template found.")
 
     email_sent_successfully = send_outreach_single(
         smtp_cfg, sender_email, lead["email"], subject, body_text, cc=req.cc
@@ -359,6 +365,16 @@ Website: www.incubein.com"""
     )
     conn.commit()
     conn.close()
+
+    log_email_send(
+        recipient_email=lead["email"],
+        recipient_name=lead_name,
+        subject=subject,
+        template_key=template_key,
+        kind="outreach",
+        status="sent" if email_sent_successfully else "simulated",
+    )
+
     msg_status = "Real email sent via SMTP" if email_sent_successfully else "SMTP not configured, simulated sending"
     return {"status": "success", "message": f"Outreach email campaign successfully triggered for {lead['incubator_name']} ({msg_status})."}
 
@@ -369,52 +385,23 @@ def send_followup_email(lead_id: str, lead_name: str, lead_email: str, followup_
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT incubator_id FROM outreach_leads WHERE id = ?", (lead_id,))
+    cursor.execute("SELECT * FROM outreach_leads WHERE id = ?", (lead_id,))
     lead_row = cursor.fetchone()
     conn.close()
 
-    if lead_row and lead_row["incubator_id"] == "incubein_cohort":
-        subject = f"Following up: Introduction to Incubein Foundation – {lead_name} (Follow-up #{followup_number})"
-        body_text = f"""Dear {lead_name},
+    is_startup = bool(lead_row and lead_row["incubator_id"] == "incubein_cohort")
+    lead = {"incubator_name": lead_name}
 
-Greetings from Incubein Foundation RTM Nagpur University.
+    entity_kind = "startup" if is_startup else "incubator"
+    tpl = get_email_template(get_setting(f"default_template_{entity_kind}_followup", "")) or get_default_template("followup")
 
-We are following up on our previous email regarding our invitation to explore how Incubein Foundation can support your startup journey.
-
-We remain very interested in connecting with {lead_name} and would love to schedule a 30-minute Google Meet at your convenience.
-
-Please let us know a suitable date and time that works for you, and we'll be happy to coordinate.
-
-Warm regards,
-
-Team Incubein Foundation
-Incubein Foundation - RTMNU Business Incubation Centre
-Nagpur, Maharashtra
-Email: teamincubein@gmail.com
-Website: www.incubein.com
-(Follow-up Reference #{followup_number})
-"""
+    if tpl:
+        rendered = render_template(tpl, _context_for_entity(lead, {"FollowupNumber": followup_number}))
+        subject = rendered["subject"]
+        body_text = rendered["body"]
     else:
         subject = f"Following up: Introduction to Incubein Foundation – {lead_name} (Follow-up #{followup_number})"
-        body_text = f"""Dear {lead_name},
-
-Greetings from Incubein Foundation RTM Nagpur University.
-
-We are following up on our previous email regarding a potential Strategic Cooperation and Academic Collaboration between Incubein Foundation and {lead_name}.
-
-We remain keen to explore a 30-minute Google Meet at your convenience to discuss how we can create mutual value for our respective ecosystems.
-
-Please let us know a suitable date and time, and we'll be happy to coordinate.
-
-Warm regards,
-
-Team Incubein Foundation
-Incubein Foundation - RTMNU Business Incubation Centre
-Nagpur, Maharashtra
-Email: teamincubein@gmail.com
-Website: www.incubein.com
-(Follow-up Reference #{followup_number})
-"""
+        body_text = f"Dear {lead_name},\n\nGreetings from Incubein Foundation RTM Nagpur University.\n\nWe are following up on our previous email.\n\nWarm regards,\n\nTeam Incubein Foundation\n(Follow-up Reference #{followup_number})"
 
     email_sent_successfully = send_plain_email(
         smtp_cfg, sender_email, lead_email, subject, body_text, from_display="Incubein Outreach"
@@ -432,6 +419,16 @@ Website: www.incubein.com
     ''', (followup_number, datetime.now().isoformat(), lead_id))
     conn.commit()
     conn.close()
+
+    log_email_send(
+        recipient_email=lead_email,
+        recipient_name=lead_name,
+        subject=subject,
+        template_key=tpl.get("key", "") if tpl else "",
+        kind="followup",
+        status="sent" if email_sent_successfully else "simulated",
+        details=f"Follow-up #{followup_number}",
+    )
 
     return email_sent_successfully
 
@@ -456,21 +453,31 @@ def trigger_mass_send(req: MassSendRequest):
     sender_email = smtp_cfg["sender_email"]
     is_smtp_ready = smtp_cfg["is_smtp_ready"]
 
+    settings = get_settings()
+    batch_size = int(settings.get("scrape_batch_size", 8))
+    batch_delay = int(settings.get("scrape_batch_delay_seconds", 15))
+
+    entity_kind = "startup" if req.target_type == "startups" else "incubator"
+    tpl = _pick_template(entity_kind, getattr(req, "template_id", None) or "")
+
     sent_count = 0
     simulated_count = 0
+    processed = 0
 
     for lead in leads:
-        # Determine subject and body (with template interpolation if it's startups)
+        # Resolve subject/body: explicit overrides, else rendered template.
         subject_to_send = req.subject
         body_to_send = req.body
+        if (not subject_to_send or not body_to_send) and tpl:
+            rendered = render_template(tpl, _context_for_entity(lead))
+            subject_to_send = subject_to_send or rendered["subject"]
+            body_to_send = body_to_send or rendered["body"]
 
-        # If subject/body is not provided, use default
-        if req.target_type == "startups" and not subject_to_send:
+        # Last-resort fallback so a lead is never emailed blank.
+        if not subject_to_send:
             subject_to_send = f"Introduction to Incubein Foundation"
-            body_to_send = f"Hello {lead['incubator_name']},\n\nGreetings from Incubein Foundation RTM Nagpur University.\n\nWe came across your startup and were impressed by the work you're building. At Incubein Foundation, we work closely with early-stage and growth-stage startups by providing the right ecosystem, mentorship, and resources to help them scale.\n\nWe would love to learn more about {lead['incubator_name']}, understand your current challenges and growth plans, and explore how Incubein Foundation can support your journey.\n\nIf you're available, we'd be happy to schedule a 30-minute Google Meet at your convenience.\n\nPlease let us know a suitable date and time that works for you, and we'll be happy to coordinate.\n\nWarm regards,\n\nTeam Incubein Foundation\nIncubein Foundation - RTMNU Business Incubation Centre\nNagpur, Maharashtra\nEmail: teamincubein@gmail.com\nWebsite: www.incubein.com"
-        elif not subject_to_send:
-            subject_to_send = f"Introduction to Incubein Foundation"
-            body_to_send = f"Hello {lead['incubator_name']},\n\nGreetings from Incubein Foundation RTM Nagpur University.\n\nWe came across your incubation centre and were impressed by the impactful work you're doing for the startup ecosystem. We would love to explore a potential Strategic Cooperation and Academic Collaboration between Incubein Foundation and {lead['incubator_name']}.\n\nIf you're available, we'd be happy to schedule a 30-minute Google Meet at your convenience.\n\nPlease let us know a suitable date and time that works for you, and we'll be happy to coordinate.\n\nWarm regards,\n\nTeam Incubein Foundation\nIncubein Foundation - RTMNU Business Incubation Centre\nNagpur, Maharashtra\nEmail: teamincubein@gmail.com\nWebsite: www.incubein.com"
+        if not body_to_send:
+            body_to_send = f"Hello {lead['incubator_name']},\n\nGreetings from Incubein Foundation RTM Nagpur University.\n\nWe would love to schedule a 30-minute Google Meet at your convenience.\n\nWarm regards,\n\nTeam Incubein Foundation"
 
         # Interpolate name placeholders if present
         if body_to_send:
@@ -490,11 +497,26 @@ def trigger_mass_send(req: MassSendRequest):
         else:
             simulated_count += 1
 
+        log_email_send(
+            recipient_email=lead["email"],
+            recipient_name=lead["incubator_name"],
+            subject=subject_to_send,
+            template_key=tpl.get("key", "") if tpl else "",
+            kind="mass",
+            status="sent" if email_sent else "simulated",
+            details=f"Mass send ({req.target_type})",
+        )
+
         # Update lead in DB
         cursor.execute(
             "UPDATE outreach_leads SET status = 'Sent', sent_at = ?, contact_count = coalesce(contact_count, 0) + 1, last_contact_reason = ? WHERE id = ?",
             (datetime.now().isoformat(), subject_to_send or "Mass Outreach Email", lead["id"])
         )
+
+        processed += 1
+        if processed % batch_size == 0 and batch_delay > 0:
+            conn.commit()
+            time.sleep(batch_delay)
 
     conn.commit()
     conn.close()
@@ -507,8 +529,152 @@ def trigger_mass_send(req: MassSendRequest):
     }
 
 
+def dispatch_campaign(campaign_id: str):
+    """Dispatches an email campaign to its target audience with batching.
+
+    Supported target_type values:
+      - "all_startups"      : every Draft startup lead in outreach_leads
+      - "all_incubators"    : every Draft incubator lead in outreach_leads
+      - "lead:<lead_id>"    : a single existing outreach lead
+      - "custom:<email>"    : an arbitrary recipient
+    """
+    from .campaigns import get_campaign, update_campaign
+
+    campaign = get_campaign(campaign_id)
+    if not campaign:
+        raise NotFoundError("Campaign not found")
+
+    if campaign.get("status") not in ("draft", "paused"):
+        raise BadRequestError(f"Campaign status is '{campaign.get('status')}'. Only draft/paused campaigns can be dispatched.")
+
+    target_type = campaign.get("target_type") or "all_startups"
+    subject = campaign.get("subject") or ""
+    body = campaign.get("body") or ""
+    cc = campaign.get("cc") or ""
+    template_key = campaign.get("template_id") or ""
+
+    leads = []
+    if target_type == "all_startups":
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM outreach_leads WHERE status = 'Draft' AND incubator_id = 'incubein_cohort'")
+        leads = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        entity_kind = "startup"
+    elif target_type == "all_incubators":
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM outreach_leads WHERE status = 'Draft' AND incubator_id != 'incubein_cohort'")
+        leads = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        entity_kind = "incubator"
+    elif target_type.startswith("lead:"):
+        lead_id = target_type.split(":", 1)[1]
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM outreach_leads WHERE id = ?", (lead_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            leads = [dict(row)]
+        entity_kind = "startup" if leads and leads[0].get("incubator_id") == "incubein_cohort" else "incubator"
+    elif target_type.startswith("custom:"):
+        email = target_type.split(":", 1)[1].strip()
+        if email:
+            leads = [{"id": None, "incubator_name": email, "email": email, "incubator_id": "custom"}]
+        entity_kind = "startup"
+    else:
+        raise BadRequestError(f"Unsupported campaign target_type '{target_type}'.")
+
+    if not leads:
+        update_campaign(campaign_id, {"status": "completed"})
+        return {"status": "success", "sent_count": 0, "simulated_count": 0, "message": "No recipients matched for this campaign."}
+
+    smtp_cfg = get_smtp_config()
+    sender_email = smtp_cfg["sender_email"]
+    is_smtp_ready = smtp_cfg["is_smtp_ready"]
+
+    settings = get_settings()
+    batch_size = int(campaign.get("batch_size") or settings.get("scrape_batch_size", 8))
+    batch_delay = int(campaign.get("delay_seconds") or settings.get("scrape_batch_delay_seconds", 15))
+
+    tpl = None
+    if template_key:
+        tpl = get_email_template(template_key)
+    if not tpl:
+        tpl = _pick_template(entity_kind, None)
+
+    update_campaign(campaign_id, {"status": "sending"})
+
+    sent_count = 0
+    simulated_count = 0
+    processed = 0
+
+    for lead in leads:
+        subject_to_send = subject
+        body_to_send = body
+        if (not subject_to_send or not body_to_send) and tpl:
+            rendered = render_template(tpl, _context_for_entity(lead))
+            subject_to_send = subject_to_send or rendered["subject"]
+            body_to_send = body_to_send or rendered["body"]
+
+        if not subject_to_send:
+            subject_to_send = f"Introduction to Incubein Foundation"
+        if not body_to_send:
+            body_to_send = f"Hello {lead.get('incubator_name', '')},\n\nGreetings from Incubein Foundation RTM Nagpur University.\n\nWarm regards,\n\nTeam Incubein Foundation"
+
+        if body_to_send:
+            body_to_send = body_to_send.replace("{StartupName}", lead.get("incubator_name", "")).replace("{IncubatorName}", lead.get("incubator_name", ""))
+        if subject_to_send:
+            subject_to_send = subject_to_send.replace("{StartupName}", lead.get("incubator_name", "")).replace("{IncubatorName}", lead.get("incubator_name", ""))
+
+        email_sent = False
+        if is_smtp_ready:
+            email_sent = send_outreach_single(smtp_cfg, sender_email, lead["email"], subject_to_send, body_to_send, cc=cc)
+            if email_sent:
+                sent_count += 1
+            else:
+                simulated_count += 1
+        else:
+            simulated_count += 1
+
+        log_email_send(
+            recipient_email=lead["email"],
+            recipient_name=lead.get("incubator_name", ""),
+            subject=subject_to_send,
+            template_key=tpl.get("key", "") if tpl else "",
+            campaign_id=campaign_id,
+            kind="campaign",
+            status="sent" if email_sent else "simulated",
+        )
+
+        if lead.get("id"):
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE outreach_leads SET status = 'Sent', sent_at = ?, contact_count = coalesce(contact_count, 0) + 1, last_contact_reason = ? WHERE id = ?",
+                (datetime.now().isoformat(), subject_to_send or "Campaign Email", lead["id"])
+            )
+            conn.commit()
+            conn.close()
+
+        processed += 1
+        if processed % batch_size == 0 and batch_delay > 0:
+            time.sleep(batch_delay)
+
+    update_campaign(campaign_id, {"status": "completed"})
+
+    return {
+        "status": "success",
+        "campaign_id": campaign_id,
+        "sent_count": sent_count,
+        "simulated_count": simulated_count,
+        "message": f"Campaign '{campaign.get('name')}' dispatched to {len(leads)} recipient(s) ({sent_count} real emails, {simulated_count} simulated)."
+    }
+
+
 def send_followup_single(req: FollowupEmailRequest):
-    if config.FOLLOWUPS_PAUSED:
+    if get_setting("followups_paused", True):
         raise BadRequestError("Follow-up emails are permanently paused. Resume follow-ups in the Outreach Automation controls to proceed.")
 
     conn = get_db_connection()
@@ -544,7 +710,7 @@ def send_followup_single(req: FollowupEmailRequest):
 
 
 def send_followups():
-    if config.FOLLOWUPS_PAUSED:
+    if get_setting("followups_paused", True):
         return {
             "status": "paused",
             "checked_at": datetime.now().isoformat(),
@@ -561,6 +727,7 @@ def send_followups():
 
     dispatched = []
     now = datetime.now()
+    followup_delay = int(get_setting("followup_delay", 120))
 
     for lead in leads:
         last_time_str = lead.get("last_followup_at") or lead.get("sent_at")
@@ -571,7 +738,7 @@ def send_followups():
             last_time = datetime.fromisoformat(last_time_str)
             elapsed_seconds = (now - last_time).total_seconds()
 
-            if elapsed_seconds >= config.FOLLOWUP_DELAY:
+            if elapsed_seconds >= followup_delay:
                 current_count = lead.get("followup_count", 0) or 0
                 next_count = current_count + 1
 
@@ -604,6 +771,7 @@ def check_and_send_followups_sync():
     leads = [dict(row) for row in cursor.fetchall()]
 
     now = datetime.now()
+    followup_delay = int(get_setting("followup_delay", 120))
     for lead in leads:
         last_time_str = lead.get("last_followup_at") or lead.get("sent_at")
         if not last_time_str:
@@ -612,7 +780,7 @@ def check_and_send_followups_sync():
         try:
             last_time = datetime.fromisoformat(last_time_str)
             elapsed_seconds = (now - last_time).total_seconds()
-            if elapsed_seconds >= config.FOLLOWUP_DELAY:
+            if elapsed_seconds >= followup_delay:
                 current_count = lead.get("followup_count", 0) or 0
                 next_count = current_count + 1
                 if next_count <= 2:
@@ -1020,28 +1188,29 @@ def check_imap_replies_sync():
 
 
 def get_outreach_config():
+    settings = get_settings()
     return {
-        "sync_interval": config.IMAP_SYNC_INTERVAL,
-        "followup_delay": config.FOLLOWUP_DELAY,
-        "scanning_paused": config.SCANNING_PAUSED,
-        "followups_paused": config.FOLLOWUPS_PAUSED,
+        "sync_interval": settings.get("sync_interval", config.IMAP_SYNC_INTERVAL),
+        "followup_delay": settings.get("followup_delay", config.FOLLOWUP_DELAY),
+        "scanning_paused": settings.get("scanning_paused", config.SCANNING_PAUSED),
+        "followups_paused": settings.get("followups_paused", config.FOLLOWUPS_PAUSED),
     }
 
 
 def update_outreach_config(cfg: OutreachConfig):
-    config.IMAP_SYNC_INTERVAL = cfg.sync_interval
-    if cfg.followup_delay is not None:
-        config.FOLLOWUP_DELAY = cfg.followup_delay
-    if cfg.scanning_paused is not None:
-        config.SCANNING_PAUSED = cfg.scanning_paused
-    if cfg.followups_paused is not None:
-        config.FOLLOWUPS_PAUSED = cfg.followups_paused
-    print(f"Updated outreach config: IMAP sync={config.IMAP_SYNC_INTERVAL}s, followup delay={config.FOLLOWUP_DELAY}s, scanning_paused={config.SCANNING_PAUSED}, followups_paused={config.FOLLOWUPS_PAUSED}")
+    patch = {
+        "sync_interval": cfg.sync_interval,
+        "followup_delay": cfg.followup_delay if cfg.followup_delay is not None else None,
+        "scanning_paused": cfg.scanning_paused,
+        "followups_paused": cfg.followups_paused,
+    }
+    update_settings({k: v for k, v in patch.items() if v is not None})
+    print(f"Updated outreach config: sync_interval={cfg.sync_interval}s, followup_delay={cfg.followup_delay}s, scanning_paused={cfg.scanning_paused}, followups_paused={cfg.followups_paused}")
     return get_outreach_config()
 
 
 def trigger_check_replies():
-    if config.SCANNING_PAUSED:
+    if get_setting("scanning_paused", True):
         return {"status": "paused", "checked_at": datetime.now().isoformat(), "new_replies": [], "message": "Inbox scanning is permanently paused. Resume scanning in the Outreach Automation controls to proceed."}
     replies = check_imap_replies_sync()
     return {"status": "success", "checked_at": datetime.now().isoformat(), "new_replies": replies}
@@ -1075,19 +1244,23 @@ def start_imap_checking_loop():
     def loop():
         while True:
             try:
-                if config.IMAP_SYNC_INTERVAL > 0:
-                    if not config.SCANNING_PAUSED:
+                settings = get_settings()
+                sync_interval = int(settings.get("sync_interval", config.IMAP_SYNC_INTERVAL))
+                scanning_paused = settings.get("scanning_paused", config.SCANNING_PAUSED)
+                followups_paused = settings.get("followups_paused", config.FOLLOWUPS_PAUSED)
+                if sync_interval > 0:
+                    if not scanning_paused:
                         check_imap_replies_sync()
                     else:
                         print("[Background] Inbox scanning paused; skipping IMAP check cycle.")
-                    if not config.FOLLOWUPS_PAUSED:
+                    if not followups_paused:
                         check_and_send_followups_sync()
                     else:
                         print("[Background] Follow-ups paused; skipping follow-up dispatch cycle.")
             except Exception as e:
                 print("IMAP background checker loop error:", e)
 
-            sleep_time = max(5, config.IMAP_SYNC_INTERVAL) if config.IMAP_SYNC_INTERVAL > 0 else 5
+            sleep_time = max(5, int(get_setting("sync_interval", 30)))
             time.sleep(sleep_time)
 
     t = threading.Thread(target=loop, daemon=True)

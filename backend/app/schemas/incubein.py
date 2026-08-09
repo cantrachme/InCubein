@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel
 
@@ -23,6 +23,13 @@ class ScrapeEnrichRequest(BaseModel):
 class BatchEnrichRequest(BaseModel):
     entity_names: List[str]
     entity_type: str = "incubator"
+    city: str = ""
+    state: str = ""
+
+
+class SaveEnrichedRequest(BaseModel):
+    entity_type: str = "incubator"
+    results: List[dict] = []
 
 
 class AddIncubatorsToEcosystemRequest(BaseModel):
@@ -37,3 +44,8 @@ class MilestoneRequest(BaseModel):
     meeting_date: str
     meeting_link: str = "Google Meet"
     notes: str = ""
+
+
+class SeedRejectionRequest(BaseModel):
+    app_ids: List[str] = []
+    all_non_shortlisted: bool = False

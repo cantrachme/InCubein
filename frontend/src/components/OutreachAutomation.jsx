@@ -297,15 +297,21 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
     }
   }, [defaultTargetType]);
   const [selectedTemplateKey, setSelectedTemplateKey] = useState("startup_meeting");
+  const [templates, setTemplates] = useState([]);
+
+  const getTemplateList = (tgt) =>
+    templates.length > 0
+      ? templates.filter(t => (t.category || "") === tgt)
+      : Object.entries(PREDEFINED_TEMPLATES).filter(([k, v]) => v.target === tgt).map(([k, v]) => ({ key: k, name: v.name, subject: v.subject, body: v.body, cc: v.cc || "" }));
 
   useEffect(() => {
-    if (!PREDEFINED_TEMPLATES[selectedTemplateKey] || PREDEFINED_TEMPLATES[selectedTemplateKey].target !== targetType) {
-      const firstValid = Object.entries(PREDEFINED_TEMPLATES).find(([k, v]) => v.target === targetType);
-      if (firstValid) {
-        setSelectedTemplateKey(firstValid[0]);
+    const valid = getTemplateList(targetType);
+    if (!valid.some(t => t.key === selectedTemplateKey)) {
+      if (valid.length > 0) {
+        setSelectedTemplateKey(valid[0].key);
       }
     }
-  }, [targetType, selectedTemplateKey]);
+  }, [targetType, selectedTemplateKey, templates]);
 
   const [selectedMailAccount, setSelectedMailAccount] = useState("default");
 
@@ -564,6 +570,17 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
       const incsRes = await fetch("/api/incubators", { cache: "no-store" });
       const incsData = await incsRes.json();
       setIncubators(incsData);
+
+      // Fetch email templates (DB-backed). Falls back to built-in defaults.
+      try {
+        const templatesRes = await fetch("/api/templates", { cache: "no-store" });
+        const templatesData = await templatesRes.json();
+        if (Array.isArray(templatesData) && templatesData.length > 0) {
+          setTemplates(templatesData);
+        }
+      } catch (tplErr) {
+        console.error("Error fetching templates:", tplErr);
+      }
 
       // Fetch external events using the Google Calendar API key
       try {
@@ -969,19 +986,19 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
     
     let payload = { lead_id: leadId };
     
-    
-    const template = PREDEFINED_TEMPLATES[selectedTemplateKey];
+    const template = getTemplateList(targetType).find(t => t.key === selectedTemplateKey);
     if (template) {
-      const compiledSubject = template.subject
+      const compiledSubject = (template.subject || "")
         .replace(/{StartupName}/g, leadName)
         .replace(/{IncubatorName}/g, leadName);
-      const compiledBody = template.body
+      const compiledBody = (template.body || "")
         .replace(/{StartupName}/g, leadName)
         .replace(/{IncubatorName}/g, leadName);
       payload = {
         lead_id: leadId,
         subject: compiledSubject,
         body: compiledBody,
+        template_id: template.key,
         ...(template.cc ? { cc: template.cc } : {}),
         mail_account: selectedMailAccount
       };
@@ -1027,10 +1044,11 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
       mail_account: selectedMailAccount
     };
 
-    const template = PREDEFINED_TEMPLATES[selectedTemplateKey];
+    const template = getTemplateList(targetType).find(t => t.key === selectedTemplateKey);
     if (template) {
       payload.subject = template.subject;
       payload.body = template.body;
+      payload.template_id = template.key;
       if (template.cc) payload.cc = template.cc;
     }
 
@@ -1494,10 +1512,8 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                     value={selectedTemplateKey}
                     onChange={(e) => setSelectedTemplateKey(e.target.value)}
                   >
-                    {Object.entries(PREDEFINED_TEMPLATES)
-                      .filter(([k, v]) => v.target === targetType)
-                      .map(([k, v]) => (
-                        <option key={k} value={k}>{v.name}</option>
+                    {getTemplateList(targetType).map((t) => (
+                        <option key={t.key} value={t.key}>{t.name}</option>
                       ))}
                   </select>
                 </div>

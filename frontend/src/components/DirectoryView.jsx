@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "react-toastify";
-import { Search, MapPin, Globe, Mail, Phone, ExternalLink, Calendar, Building, HelpCircle, Layers, FileSignature, Send, X, Trash2 } from "lucide-react";
+import { Search, MapPin, Globe, Mail, Phone, ExternalLink, Calendar, Building, HelpCircle, Layers, FileSignature, Send, X, Trash2, Upload } from "lucide-react";
 
 export default function DirectoryView({ filtersData, onDraftMou }) {
   const [incubators, setIncubators] = useState([]);
@@ -12,6 +12,37 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
   const [selectedSector, setSelectedSector] = useState("");
   const [selectedRegion, setSelectedRegion] = useState("");
   const [sortMode, setSortMode] = useState("name");
+  const [uploading, setUploading] = useState(false);
+
+  const handleUploadExcel = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = "";
+
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("entity_type", "incubator");
+
+    setUploading(true);
+    try {
+      const res = await fetch("/api/directory/upload", {
+        method: "POST",
+        body: formData,
+      });
+      const result = await res.json();
+      if (res.ok && result.status === "success") {
+        toast.success(result.message);
+        fetchIncubators();
+      } else {
+        toast.error(result.detail || result.message || "Failed to import Excel file.");
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Network error during file upload.");
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const handleClearDirectory = async () => {
     if (!window.confirm("Are you sure you want to clear the entire Incubators Directory? This is irreversible.")) return;
@@ -267,16 +298,29 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
             Discover and search academic, government, and private TBIs.
           </p>
         </div>
-        {incubators.length > 0 && (
-          <button
-            className="btn btn-secondary"
-            onClick={handleClearDirectory}
-            style={{ color: "var(--danger)" }}
-          >
-            <Trash2 size={14} style={{ marginRight: "6px" }} />
-            Reset Directory
-          </button>
-        )}
+        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+          <label className={`btn btn-secondary ${uploading ? "disabled" : ""}`} style={{ cursor: "pointer", margin: 0 }}>
+            <Upload size={14} style={{ marginRight: "6px" }} />
+            {uploading ? "Importing..." : "Upload Excel"}
+            <input
+              type="file"
+              accept=".xlsx, .xls"
+              onChange={handleUploadExcel}
+              disabled={uploading}
+              style={{ display: "none" }}
+            />
+          </label>
+          {incubators.length > 0 && (
+            <button
+              className="btn btn-secondary"
+              onClick={handleClearDirectory}
+              style={{ color: "var(--danger)" }}
+            >
+              <Trash2 size={14} style={{ marginRight: "6px" }} />
+              Reset Directory
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Filtering Bar */}

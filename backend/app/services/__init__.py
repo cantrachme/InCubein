@@ -28,6 +28,7 @@ from .outreach import (
     process_reply,
     process_outreach_reply,
     check_imap_replies_sync,
+    dispatch_campaign,
 )
 from .google_meet import (
     schedule_meeting,
@@ -53,17 +54,48 @@ from .incubein import (
     clear_startups_directory,
     scrape_and_enrich_entity,
     batch_enrich_entities,
+    enrich_from_excel,
+    save_enriched_to_db,
     add_incubator_cohort_to_db,
     get_nurture_loop_entities,
     add_nurture_milestone,
+    process_seed_support_rejections,
 )
 from .pipeline import reset_pipeline, run_pipeline, get_logs, export_data
+from .settings import (
+    get_settings,
+    get_setting,
+    update_settings,
+    reset_settings,
+)
+from .templates import (
+    get_email_templates,
+    get_email_template,
+    get_default_template,
+    create_email_template,
+    update_email_template,
+    delete_email_template,
+    render_template,
+)
+from .campaigns import (
+    get_campaigns,
+    get_campaign,
+    create_campaign,
+    update_campaign,
+    delete_campaign,
+)
+from .email_logs import (
+    log_email_send,
+    get_email_logs,
+    clear_email_logs,
+)
 from .directory import (
     get_incubators,
     get_startups,
     get_graph,
     get_analytics,
     get_region,
+    import_directory_excel,
 )
 from .incubators import update_incubator_contact, find_matching_incubators
 from .ai import get_ai_models, chat_assistant
@@ -96,6 +128,26 @@ __all__ = [
     "process_reply",
     "process_outreach_reply",
     "check_imap_replies_sync",
+    "dispatch_campaign",
+    "get_settings",
+    "get_setting",
+    "update_settings",
+    "reset_settings",
+    "get_email_templates",
+    "get_email_template",
+    "get_default_template",
+    "create_email_template",
+    "update_email_template",
+    "delete_email_template",
+    "render_template",
+    "get_campaigns",
+    "get_campaign",
+    "create_campaign",
+    "update_campaign",
+    "delete_campaign",
+    "log_email_send",
+    "get_email_logs",
+    "clear_email_logs",
     "schedule_meeting",
     "get_outreach_meetings",
     "update_meeting_status",
@@ -117,9 +169,12 @@ __all__ = [
     "clear_startups_directory",
     "scrape_and_enrich_entity",
     "batch_enrich_entities",
+    "enrich_from_excel",
+    "save_enriched_to_db",
     "add_incubator_cohort_to_db",
     "get_nurture_loop_entities",
     "add_nurture_milestone",
+    "process_seed_support_rejections",
     "reset_pipeline",
     "run_pipeline",
     "get_logs",
@@ -129,6 +184,7 @@ __all__ = [
     "get_graph",
     "get_analytics",
     "get_region",
+    "import_directory_excel",
     "update_incubator_contact",
     "find_matching_incubators",
     "get_ai_models",

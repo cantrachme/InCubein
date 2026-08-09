@@ -1,10 +1,15 @@
 import json
 import math
+import io
+import uuid
+from datetime import datetime
 from typing import Optional
 
-from ..core.database import get_db_connection
+from ..core.database import get_db_connection, get_mongo_db
+from ..core.exceptions import ServiceError
 from .graph import generate_web_graph
 from .outreach import seed_outreach_leads
+from .evaluator import extract_dynamic_rows_and_headers
 
 
 def get_region(state: str) -> str:
@@ -160,6 +165,199 @@ def get_startups(
         }
 
     return rows
+
+
+def _safe_str(val):
+    if val is None:
+        return ""
+    if isinstance(val, float) and val.is_integer():
+        return str(int(val))
+    return str(val).strip()
+
+
+def _pick(headers, mappings):
+    for key, patterns in mappings.items():
+        for i, h in enumerate(headers):
+            h_str = _safe_str(h).lower()
+            for pat in patterns:
+                if pat in h_str:
+                    return key, i
+    return None, None
+
+
+_STARTUP_COL_MAP = {
+    "startup_name": ["startup name", "name of startup", "company name", "company", "startup", "organization", "org name", "entity name", "name", "title"],
+    "sector": ["sector", "domain", "industry", "focus area", "vertical"],
+    "founders": ["founder", "contact person", "representative", "applicant name", "founder name"],
+    "website": ["website", "url", "web address"],
+    "funding_stage": ["funding stage", "stage", "maturity", "type"],
+    "hq_city": ["hq city", "city", "headquarters", "city & state", "location", "address"],
+    "email": ["email", "e-mail", "mail id", "mail"],
+    "description": ["description", "business summary", "about", "overview", "summary", "details"],
+    "contact_email": ["contact email", "contact mail", "primary email"],
+    "incubator_id": ["incubator id", "incubator"],
+}
+
+_INCUBATOR_COL_MAP = {
+    "name": ["incubator name", "name of incubator", "hub name", "center name", "tbi name", "org name", "organization name", "name", "title"],
+    "city": ["city", "hq city", "headquarters", "location"],
+    "state": ["state", "region"],
+    "email": ["email", "e-mail", "mail id", "mail", "contact email"],
+    "website": ["website", "url", "web address"],
+    "focus_areas": ["focus area", "sector", "domain", "industry", "vertical"],
+    "description": ["description", "about", "overview", "summary", "details"],
+    "founder_or_head": ["founder", "head", "director", "ceo", "contact person", "representative"],
+    "organization_type": ["organization type", "org type", "type", "category"],
+    "startup_count": ["startup count", "number of startups", "startups", "portfolio", "incubated"],
+    "source_url": ["source", "source url", "data source", "reference"],
+}
+
+_STARTUP_COL_ORDER = [
+    "startup_name", "sector", "founders", "website", "funding_stage",
+    "hq_city", "email", "contact_email", "description", "incubator_id",
+]
+
+_INCUBATOR_COL_ORDER = [
+    "name", "city", "state", "email", "website", "focus_areas",
+    "description", "founder_or_head", "organization_type", "startup_count",
+]
+
+
+def import_directory_excel(contents: bytes, entity_type: str = "startup"):
+    """Import rows from an uploaded Excel file directly into the startups /
+    incubators directory collection. Skips rows without a name and rows that
+    duplicate an existing record (matched by name)."""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(contents), data_only=True)
+        sheet = wb.active
+        if sheet is None:
+            raise ServiceError("Excel file contains no sheets.")
+
+        raw_headers = []
+        for cell in sheet[1]:
+            raw_headers.append(_safe_str(cell.value))
+
+        is_startup = entity_type == "startup"
+        col_map = _STARTUP_COL_MAP if is_startup else _INCUBATOR_COL_MAP
+        col_order = _STARTUP_COL_ORDER if is_startup else _INCUBATOR_COL_ORDER
+
+        header_idx = {}
+        for field in col_order:
+            for i, h in enumerate(raw_headers):
+                h_lower = h.lower()
+                if any(pat in h_lower for pat in col_map[field]):
+                    header_idx[field] = i
+                    break
+
+        if not header_idx:
+            return {"status": "error", "message": "Could not detect recognizable columns in the uploaded Excel file."}
+
+        collection = get_mongo_db()
+        coll = collection["startups"] if is_startup else collection["incubators"]
+
+        inserted_count = 0
+        skipped_count = 0
+        created_at = datetime.now().isoformat()
+
+        for row_idx in range(2, sheet.max_row + 1):
+            def col_val(field):
+                i = header_idx.get(field)
+                if i is None or i >= len(raw_headers):
+                    return ""
+                return _safe_str(sheet.cell(row=row_idx, column=i + 1).value)
+
+            if is_startup:
+                name = col_val("startup_name")
+                if not name:
+                    skipped_count += 1
+                    continue
+                dup = coll.find_one({"startup_name": name})
+                if dup:
+                    skipped_count += 1
+                    continue
+
+                max_id = 1
+                try:
+                    ids = []
+                    for doc in coll.find({}, {"id": 1}):
+                        v = doc.get("id")
+                        if v:
+                            if isinstance(v, int):
+                                ids.append(v)
+                            elif isinstance(v, str) and v.isdigit():
+                                ids.append(int(v))
+                    if ids:
+                        max_id = max(ids) + 1
+                except Exception:
+                    pass
+
+                record = {
+                    "id": str(max_id),
+                    "startup_name": name,
+                    "sector": col_val("sector") or "General",
+                    "founders": col_val("founders"),
+                    "website": col_val("website"),
+                    "funding_stage": col_val("funding_stage") or "Active",
+                    "hq_city": col_val("hq_city"),
+                    "email": col_val("email") or col_val("contact_email"),
+                    "description": col_val("description"),
+                    "incubator_id": col_val("incubator_id") or "excel_upload",
+                    "confidence_score": None,
+                    "status": "Imported",
+                    "source_url": "Excel Upload",
+                    "last_updated": created_at,
+                }
+            else:
+                name = col_val("name")
+                if not name:
+                    skipped_count += 1
+                    continue
+                dup = coll.find_one({"name": name})
+                if dup:
+                    skipped_count += 1
+                    continue
+
+                startup_count = col_val("startup_count")
+                try:
+                    startup_count = int(float(startup_count))
+                except Exception:
+                    startup_count = 0
+
+                record = {
+                    "id": f"inc_{uuid.uuid4().hex[:8]}",
+                    "name": name,
+                    "city": col_val("city"),
+                    "state": col_val("state"),
+                    "email": col_val("email"),
+                    "website": col_val("website"),
+                    "focus_areas": col_val("focus_areas"),
+                    "description": col_val("description"),
+                    "founder_or_head": col_val("founder_or_head"),
+                    "organization_type": col_val("organization_type"),
+                    "startup_count": startup_count,
+                    "confidence_score": None,
+                    "status": "resolved",
+                    "source_url": col_val("source_url") or "Excel Upload",
+                    "last_updated": created_at,
+                }
+
+            coll.insert_one(record)
+            inserted_count += 1
+
+        if inserted_count == 0:
+            return {"status": "error", "message": "No new records imported (all rows missing a name or already in the directory).", "skipped_count": skipped_count}
+
+        return {
+            "status": "success",
+            "message": f"Successfully imported {inserted_count} {entity_type}(s) into the directory ({skipped_count} skipped).",
+            "inserted_count": inserted_count,
+            "skipped_count": skipped_count,
+        }
+    except ServiceError:
+        raise
+    except Exception as e:
+        raise ServiceError(f"Failed to import excel to directory: {str(e)}")
 
 
 def get_graph():

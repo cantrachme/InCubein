@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Query, Response, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 
 from ...schemas.pipeline import PipelineRunResponse
@@ -11,6 +11,7 @@ from ...services import (
     get_startups,
     get_graph,
     get_analytics,
+    import_directory_excel,
 )
 
 router = APIRouter()
@@ -56,6 +57,15 @@ def api_get_startups(
     limit: int | None = None,
 ):
     return get_startups(q, sector, funding_stage, hq_city, incubator_id, page, limit)
+
+
+@router.post("/api/directory/upload")
+async def api_upload_directory_excel(
+    file: UploadFile = File(...),
+    entity_type: str = Form("startup"),
+):
+    contents = await file.read()
+    return import_directory_excel(contents, entity_type)
 
 
 @router.get("/api/graph")

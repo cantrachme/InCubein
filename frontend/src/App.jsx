@@ -12,6 +12,7 @@ import {
   WifiOff,
   Bot,
   Trash2,
+  Settings2,
 } from "lucide-react";
 
 import AnalyticsDashboard from "./components/AnalyticsDashboard";
@@ -22,6 +23,7 @@ import CohortEvaluator from "./components/CohortEvaluator";
 import StartupsDirectory from "./components/StartupsDirectory";
 import EnrichmentHub from "./components/EnrichmentHub";
 import IncubationLoopTracker from "./components/IncubationLoopTracker";
+import PlatformSettings from "./components/PlatformSettings";
 import { ToastContainer, toast } from "react-toastify";
 import { Globe, RefreshCcw as LoopIcon } from "lucide-react";
 
@@ -50,6 +52,12 @@ const NAV_ITEMS = [
       { id: "enrichment_hub", label: "Scraper & Enrichment", Icon: Globe, subtitle: "Web lookup & data extraction" },
     ],
   },
+  {
+    section: "Configuration",
+    items: [
+      { id: "platform_settings", label: "Platform Settings", Icon: Settings2, subtitle: "Templates, campaigns & automation" },
+    ],
+  },
 ];
 
 const PAGE_META = {
@@ -60,6 +68,7 @@ const PAGE_META = {
   cohort_evaluator:   { title: "INCUBEIN Cohort Evaluator",             sub: "Secure evaluation, multi-criteria scoring, and incubator ranking." },
   enrichment_hub:     { title: "Web Scraping & Data Enrichment Hub",    sub: "DuckDuckGo web search integration to auto-discover missing addresses, emails, & focus areas." },
   nurture_loop:       { title: "90-Day Incubation & Partnership Loop",  sub: "Maintain active engagement across the 3-month incubation cycle with multi-meeting milestones." },
+  platform_settings:  { title: "Platform Settings",                    sub: "Manage email templates, outreach campaigns, and automation configuration." },
 };
 
 
@@ -194,6 +203,8 @@ export default function App() {
         return <EnrichmentHub />;
       case "nurture_loop":
         return <IncubationLoopTracker />;
+      case "platform_settings":
+        return <PlatformSettings />;
 
       default:
         return <AnalyticsDashboard analyticsData={analyticsData} loading={loading} />;

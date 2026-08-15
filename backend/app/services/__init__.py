@@ -76,6 +76,11 @@ from .templates import (
     update_email_template,
     delete_email_template,
     render_template,
+    interpolate_variables,
+    get_template_attachments,
+    upload_template_attachment,
+    delete_template_attachment,
+    resolve_template_attachments,
 )
 from .campaigns import (
     get_campaigns,
@@ -140,6 +145,11 @@ __all__ = [
     "update_email_template",
     "delete_email_template",
     "render_template",
+    "interpolate_variables",
+    "get_template_attachments",
+    "upload_template_attachment",
+    "delete_template_attachment",
+    "resolve_template_attachments",
     "get_campaigns",
     "get_campaign",
     "create_campaign",

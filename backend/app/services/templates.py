@@ -12,9 +12,11 @@ Placeholders supported in subjects/bodies:
   {OrgEmail}, {OrgWebsite}, {OrgAddress}, {Date}, {Time}, {MeetingLink}
 """
 
+import os
 import uuid
 from datetime import datetime
 
+from ..core import config
 from ..core.database import get_mongo_db
 from .settings import get_settings
 
@@ -339,6 +341,12 @@ def render_template(template: dict, context: dict) -> dict:
     return _compile_template(template, context)
 
 
+def interpolate_variables(text: str, context: dict) -> str:
+    """Fills any remaining template placeholders (e.g. {OrgName}) in plain text
+    using the given context and platform settings."""
+    return _compile_template({"subject": "", "body": text}, context)["body"]
+
+
 def seed_default_templates():
     try:
         coll = _collection()
@@ -346,6 +354,9 @@ def seed_default_templates():
             now = datetime.now().isoformat()
             for tpl in DEFAULT_TEMPLATES:
                 tpl = dict(tpl)
+                tpl.setdefault("cc", "")
+                tpl.setdefault("bcc", "")
+                tpl.setdefault("attachments", [])
                 tpl["created_at"] = now
                 tpl["updated_at"] = now
                 coll.insert_one(tpl)
@@ -423,8 +434,10 @@ def create_email_template(data: dict) -> dict:
         "subject": data.get("subject", ""),
         "body": data.get("body", ""),
         "cc": data.get("cc") or "",
+        "bcc": data.get("bcc") or "",
         "is_default": bool(data.get("is_default", False)),
         "variables": data.get("variables") or [],
+        "attachments": data.get("attachments") or [],
         "created_at": datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat(),
     }
@@ -441,7 +454,7 @@ def update_email_template(key: str, data: dict) -> dict:
         raise ValueError(f"Template '{key}' not found.")
 
     update = {}
-    for field in ["name", "category", "subject", "body", "cc", "is_default", "variables"]:
+    for field in ["name", "category", "subject", "body", "cc", "bcc", "is_default", "variables"]:
         if field in data and data[field] is not None:
             if field == "is_default":
                 update[field] = bool(data[field])
@@ -472,6 +485,118 @@ def delete_email_template(key: str) -> bool:
     seed_default_templates()
     result = _collection().delete_one({"key": key})
     return result.deleted_count > 0
+
+
+# ---------------------------------------------------------------------------
+# Template attachments
+# ---------------------------------------------------------------------------
+
+def _attachment_dir(template_key: str) -> str:
+    safe_key = "".join(c for c in (template_key or "template") if c.isalnum() or c in "-_")
+    path = config.ATTACHMENTS_DIR / safe_key
+    os.makedirs(path, exist_ok=True)
+    return str(path)
+
+
+def _attachment_record(template_key: str, attachment_id: str) -> dict:
+    """Re-derives an attachment record for a template from its stored metadata."""
+    tpl = _collection().find_one({"key": template_key})
+    if not tpl:
+        return None
+    for att in tpl.get("attachments") or []:
+        if att.get("id") == attachment_id:
+            return att
+    return None
+
+
+def get_template_attachments(template_key: str) -> list:
+    seed_default_templates()
+    tpl = _collection().find_one({"key": template_key})
+    if not tpl:
+        return []
+    return list(tpl.get("attachments") or [])
+
+
+def upload_template_attachment(template_key: str, file) -> dict:
+    """Saves an uploaded file for a template and stores its metadata in the doc."""
+    seed_default_templates()
+    coll = _collection()
+    tpl = coll.find_one({"key": template_key})
+    if not tpl:
+        raise ValueError(f"Template '{template_key}' not found.")
+
+    filename = getattr(file, "filename", "") or f"attachment_{uuid.uuid4().hex[:8]}"
+    # Keep the original name for display but store under a unique path.
+    safe_name = os.path.basename(filename.replace("\\", "/")) or "attachment.bin"
+    attachment_id = uuid.uuid4().hex[:12]
+    stored_name = f"{attachment_id}_{safe_name}"
+
+    contents = file.file.read()
+    target_path = os.path.join(_attachment_dir(template_key), stored_name)
+    with open(target_path, "wb") as f:
+        f.write(contents)
+
+    record = {
+        "id": attachment_id,
+        "filename": safe_name,
+        "stored_name": stored_name,
+        "size": len(contents),
+        "content_type": getattr(file, "content_type", "") or "application/octet-stream",
+    }
+
+    attachments = list(tpl.get("attachments") or [])
+    attachments.append(record)
+    coll.update_one(
+        {"key": template_key},
+        {"$set": {"attachments": attachments, "updated_at": datetime.now().isoformat()}},
+    )
+    return record
+
+
+def delete_template_attachment(template_key: str, attachment_id: str) -> bool:
+    seed_default_templates()
+    coll = _collection()
+    tpl = coll.find_one({"key": template_key})
+    if not tpl:
+        raise ValueError(f"Template '{template_key}' not found.")
+
+    attachments = list(tpl.get("attachments") or [])
+    record = None
+    for att in attachments:
+        if att.get("id") == attachment_id:
+            record = att
+            break
+    if not record:
+        return False
+
+    attachments = [att for att in attachments if att.get("id") != attachment_id]
+    coll.update_one(
+        {"key": template_key},
+        {"$set": {"attachments": attachments, "updated_at": datetime.now().isoformat()}},
+    )
+
+    stored_path = os.path.join(_attachment_dir(template_key), record.get("stored_name", ""))
+    try:
+        if os.path.exists(stored_path):
+            os.remove(stored_path)
+    except Exception as e:
+        print(f"[Templates] Failed to remove attachment file: {e}")
+    return True
+
+
+def resolve_template_attachments(template_key: str) -> list:
+    """Returns a list of {filename, path} dicts for the files attached to a template.
+
+    Files are resolved from disk; missing files are silently skipped so a send
+    never fails because of a stale attachment record.
+    """
+    records = get_template_attachments(template_key)
+    resolved = []
+    for rec in records:
+        path = os.path.join(_attachment_dir(template_key), rec.get("stored_name", ""))
+        if os.path.exists(path):
+            resolved.append({"filename": rec.get("filename", os.path.basename(path)), "path": path})
+    return resolved
 
 
 def clone_defaults_to_configured_templates():

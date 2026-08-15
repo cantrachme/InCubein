@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Query
+import os
+
+from fastapi import APIRouter, Query, UploadFile, File, HTTPException
+from fastapi.responses import FileResponse
 
 from ...schemas.config import (
     SettingsUpdate,
@@ -15,6 +18,9 @@ from ...services import (
     create_email_template,
     update_email_template,
     delete_email_template,
+    get_template_attachments,
+    upload_template_attachment,
+    delete_template_attachment,
     get_campaigns,
     get_campaign,
     create_campaign,
@@ -70,6 +76,55 @@ def api_update_template(key: str, req: TemplateUpdate):
 def api_delete_template(key: str):
     deleted = delete_email_template(key)
     return {"status": "success" if deleted else "not_found", "deleted": deleted}
+
+
+# --- Template attachments ---
+@router.get("/api/templates/{key}/attachments")
+def api_get_template_attachments(key: str):
+    return get_template_attachments(key)
+
+
+@router.post("/api/templates/{key}/attachments")
+async def api_upload_template_attachment(key: str, file: UploadFile = File(...)):
+    try:
+        record = upload_template_attachment(key, file)
+        return {"status": "success", "attachment": record}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("/api/templates/{key}/attachments/{attachment_id}")
+def api_delete_template_attachment(key: str, attachment_id: str):
+    try:
+        deleted = delete_template_attachment(key, attachment_id)
+        return {"status": "success" if deleted else "not_found", "deleted": deleted}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/api/templates/{key}/attachments/{attachment_id}/download")
+def api_download_template_attachment(key: str, attachment_id: str):
+    from ...core import config as app_config
+
+    record = None
+    for att in get_template_attachments(key):
+        if att.get("id") == attachment_id:
+            record = att
+            break
+    if not record:
+        raise HTTPException(status_code=404, detail="Attachment not found.")
+
+    safe_key = "".join(c for c in key if c.isalnum() or c in "-_")
+    stored_name = record.get("stored_name", "")
+    path = os.path.join(str(app_config.ATTACHMENTS_DIR), safe_key, stored_name)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Attachment file missing on disk.")
+
+    return FileResponse(
+        path,
+        media_type=record.get("content_type") or "application/octet-stream",
+        filename=record.get("filename", os.path.basename(path)),
+    )
 
 
 # --- Email campaigns ---

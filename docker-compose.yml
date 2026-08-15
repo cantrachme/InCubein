@@ -1,0 +1,94 @@
+# Production stack: nginx (frontend) + FastAPI backend + Redis + optional MongoDB.
+#
+#   docker compose up -d --build
+#
+# Environment:
+#   - backend/.env  : application secrets (SMTP, IMAP, Google OAuth, MONGO_URI, keys)
+#   - .env          : (optional) deployment-level vars — PORT, REDIS_PASSWORD
+#
+# MongoDB: defaults to the Atlas URI in backend/.env (MONGO_URI). To self-host,
+# uncomment the `mongo` service below and point MONGO_URI at mongodb://mongo:27017/.
+
+name: incubein
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - incubein-net
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      # Redis container address (adds a password when REDIS_PASSWORD is set).
+      REDIS_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/0
+      # Persist Google OAuth token on a volume instead of inside the container.
+      TOKEN_PATH: /app/data/token.json
+      OAUTHLIB_INSECURE_TRANSPORT: "1"
+    volumes:
+      - scratch-data:/app/scratch
+      - attachments-data:/app/attachments
+      - token-data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - incubein-net
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    ports:
+      - "${PORT:-80}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - incubein-net
+
+  # Optional self-hosted MongoDB (comment out to keep using Atlas):
+  # mongo:
+  #   image: mongo:7
+  #   restart: unless-stopped
+  #   volumes:
+  #     - mongo-data:/data/db
+  #   healthcheck:
+  #     test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+  #     interval: 15s
+  #     timeout: 5s
+  #     retries: 5
+  #   networks:
+  #     - incubein-net
+
+volumes:
+  redis-data:
+  scratch-data:
+  attachments-data:
+  token-data:
+  # mongo-data:
+
+networks:
+  incubein-net:
+    driver: bridge

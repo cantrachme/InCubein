@@ -31,6 +31,7 @@ class TemplateCreate(BaseModel):
     subject: str
     body: str
     cc: Optional[str] = ""
+    bcc: Optional[str] = ""
     variables: Optional[List[str]] = []
     is_default: Optional[bool] = False
 
@@ -41,6 +42,7 @@ class TemplateUpdate(BaseModel):
     subject: Optional[str] = None
     body: Optional[str] = None
     cc: Optional[str] = None
+    bcc: Optional[str] = None
     variables: Optional[List[str]] = None
     is_default: Optional[bool] = None
 
@@ -52,6 +54,7 @@ class CampaignCreate(BaseModel):
     subject: Optional[str] = ""
     body: Optional[str] = ""
     cc: Optional[str] = ""
+    bcc: Optional[str] = ""
     batch_size: Optional[int] = 8
     delay_seconds: Optional[int] = 15
     status: Optional[str] = "draft"
@@ -64,6 +67,7 @@ class CampaignUpdate(BaseModel):
     subject: Optional[str] = None
     body: Optional[str] = None
     cc: Optional[str] = None
+    bcc: Optional[str] = None
     batch_size: Optional[int] = None
     delay_seconds: Optional[int] = None
     status: Optional[str] = None

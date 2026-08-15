@@ -33,6 +33,7 @@ const EMPTY = {
   subject: "",
   body: "",
   cc: "",
+  bcc: "",
   batch_size: 8,
   delay_seconds: 15,
 };
@@ -92,6 +93,7 @@ export default function CampaignsTab() {
       subject: camp.subject || "",
       body: camp.body || "",
       cc: camp.cc || "",
+      bcc: camp.bcc || "",
       batch_size: camp.batch_size || 8,
       delay_seconds: camp.delay_seconds || 15,
     });
@@ -240,6 +242,10 @@ export default function CampaignsTab() {
             <div>
               <label style={style.label}>CC (optional)</label>
               <input className="form-input" style={{ marginTop: "4px" }} value={form.cc} onChange={(e) => setForm({ ...form, cc: e.target.value })} />
+            </div>
+            <div>
+              <label style={style.label}>BCC (optional)</label>
+              <input className="form-input" style={{ marginTop: "4px" }} value={form.bcc} onChange={(e) => setForm({ ...form, bcc: e.target.value })} />
             </div>
             <div>
               <label style={style.label}>Batch size</label>

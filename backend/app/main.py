@@ -40,6 +40,12 @@ def on_startup():
     start_imap_checking_loop()
 
 
+@app.get("/health", include_in_schema=False)
+def health_check():
+    from .core.redis import is_connected
+    return {"status": "ok", "redis": is_connected()}
+
+
 # --- Serve Built React Frontend (production / exe mode) ---
 _static_dir = BASE_DIR / "static"
 if _static_dir.exists() and _static_dir.is_dir():

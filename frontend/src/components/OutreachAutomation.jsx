@@ -302,7 +302,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   const getTemplateList = (tgt) =>
     templates.length > 0
       ? templates.filter(t => (t.category || "") === tgt)
-      : Object.entries(PREDEFINED_TEMPLATES).filter(([k, v]) => v.target === tgt).map(([k, v]) => ({ key: k, name: v.name, subject: v.subject, body: v.body, cc: v.cc || "" }));
+      : Object.entries(PREDEFINED_TEMPLATES).filter(([k, v]) => v.target === tgt).map(([k, v]) => ({ key: k, name: v.name, subject: v.subject, body: v.body, cc: v.cc || "", bcc: v.bcc || "" }));
 
   useEffect(() => {
     const valid = getTemplateList(targetType);
@@ -988,18 +988,11 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
     
     const template = getTemplateList(targetType).find(t => t.key === selectedTemplateKey);
     if (template) {
-      const compiledSubject = (template.subject || "")
-        .replace(/{StartupName}/g, leadName)
-        .replace(/{IncubatorName}/g, leadName);
-      const compiledBody = (template.body || "")
-        .replace(/{StartupName}/g, leadName)
-        .replace(/{IncubatorName}/g, leadName);
       payload = {
         lead_id: leadId,
-        subject: compiledSubject,
-        body: compiledBody,
         template_id: template.key,
         ...(template.cc ? { cc: template.cc } : {}),
+        ...(template.bcc ? { bcc: template.bcc } : {}),
         mail_account: selectedMailAccount
       };
     }
@@ -1046,10 +1039,9 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
 
     const template = getTemplateList(targetType).find(t => t.key === selectedTemplateKey);
     if (template) {
-      payload.subject = template.subject;
-      payload.body = template.body;
       payload.template_id = template.key;
       if (template.cc) payload.cc = template.cc;
+      if (template.bcc) payload.bcc = template.bcc;
     }
 
     try {

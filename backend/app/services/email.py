@@ -5,7 +5,8 @@ from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
-from typing import Optional
+from email.mime.application import MIMEApplication
+from typing import Optional, List
 
 from ..core import config
 from ..core.database import get_db_connection
@@ -70,39 +71,75 @@ def send_smtp_message(smtp_cfg: dict, from_addr: str, recipients, msg):
     server.quit()
 
 
-def send_plain_email(smtp_cfg: dict, from_addr: str, recipient_email: str, subject: str, body_text: str, from_display: str = None) -> bool:
-    """Builds a plain-text email and sends it via SMTP. Returns True on real send."""
+def send_plain_email(smtp_cfg: dict, from_addr: str, recipient_email: str, subject: str, body_text: str, from_display: str = None, cc: str = None, bcc: str = None, attachments: List[dict] = None) -> bool:
+    """Builds a plain-text email (optional CC/BCC/attachments) and sends it via SMTP. Returns True on real send."""
     if not smtp_cfg.get("is_smtp_ready"):
         return False
     try:
-        msg = MIMEMultipart("alternative")
+        msg = MIMEMultipart("mixed")
         msg["Subject"] = subject
         msg["From"] = f"{from_display} <{from_addr}>" if from_display else from_addr
         msg["To"] = recipient_email
-        msg.attach(MIMEText(body_text, "plain"))
-        send_smtp_message(smtp_cfg, from_addr, [recipient_email], msg)
+        if cc:
+            msg["Cc"] = cc
+        if bcc:
+            msg["Bcc"] = bcc
+        msg_alt = MIMEMultipart("alternative")
+        msg_alt.attach(MIMEText(body_text, "plain"))
+        msg.attach(msg_alt)
+        _attach_files(msg, attachments or [])
+
+        recipients = [recipient_email]
+        if cc:
+            recipients += [c.strip() for c in cc.split(",") if c.strip()]
+        if bcc:
+            recipients += [c.strip() for c in bcc.split(",") if c.strip()]
+        send_smtp_message(smtp_cfg, from_addr, recipients, msg)
         return True
     except Exception as e:
         print(f"Error sending email via SMTP to {recipient_email}: {e}")
         return False
 
 
-def send_outreach_single(smtp_cfg: dict, from_addr: str, recipient_email: str, subject: str, body_text: str, cc: str = None) -> bool:
-    """Builds an outreach email (optional CC) and sends it via SMTP. Returns True on real send."""
+def _attach_files(msg, attachments: List[dict]):
+    """Attaches files to a MIME message. Each item is {'filename': str, 'path': str}."""
+    for att in attachments or []:
+        try:
+            path = att.get("path") or ""
+            filename = att.get("filename") or os.path.basename(path)
+            if not path or not os.path.exists(path):
+                continue
+            with open(path, "rb") as f:
+                part = MIMEApplication(f.read(), Name=filename)
+            part.add_header("Content-Disposition", "attachment", filename=filename)
+            msg.attach(part)
+        except Exception as e:
+            print(f"Error attaching file {att}: {e}")
+
+
+def send_outreach_single(smtp_cfg: dict, from_addr: str, recipient_email: str, subject: str, body_text: str, cc: str = None, bcc: str = None, attachments: List[dict] = None) -> bool:
+    """Builds an outreach email (optional CC/BCC/attachments) and sends it via SMTP. Returns True on real send."""
     if not smtp_cfg.get("is_smtp_ready"):
         return False
     try:
-        msg = MIMEMultipart("alternative")
+        msg = MIMEMultipart("mixed")
         msg["Subject"] = subject
         msg["From"] = from_addr
         msg["To"] = recipient_email
         if cc:
             msg["Cc"] = cc
-        msg.attach(MIMEText(body_text, "plain"))
+        if bcc:
+            msg["Bcc"] = bcc
+        msg_alt = MIMEMultipart("alternative")
+        msg_alt.attach(MIMEText(body_text, "plain"))
+        msg.attach(msg_alt)
+        _attach_files(msg, attachments or [])
 
         recipients = [recipient_email]
         if cc:
             recipients += [c.strip() for c in cc.split(",") if c.strip()]
+        if bcc:
+            recipients += [c.strip() for c in bcc.split(",") if c.strip()]
         send_smtp_message(smtp_cfg, from_addr, recipients, msg)
         return True
     except Exception as e:

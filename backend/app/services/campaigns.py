@@ -49,6 +49,7 @@ def create_campaign(data: dict) -> dict:
         "subject": data.get("subject") or "",
         "body": data.get("body") or "",
         "cc": data.get("cc") or "",
+        "bcc": data.get("bcc") or "",
         "batch_size": int(data.get("batch_size") or 8),
         "delay_seconds": int(data.get("delay_seconds") or 20),
         "status": data.get("status") or "draft",
@@ -68,7 +69,7 @@ def update_campaign(campaign_id: str, data: dict) -> dict:
 
     update = {}
     for field in [
-        "name", "target_type", "template_id", "subject", "body", "cc", "status",
+        "name", "target_type", "template_id", "subject", "body", "cc", "bcc", "status",
     ]:
         if field in data and data[field] is not None:
             update[field] = str(data[field])

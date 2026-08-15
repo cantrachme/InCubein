@@ -26,8 +26,12 @@ os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
 # Shared runtime paths
 SCRATCH_DIR = APP_DATA_DIR / "scratch"
-TOKEN_PATH = BASE_DIR / "token.json"
+ATTACHMENTS_DIR = APP_DATA_DIR / "attachments"
+TOKEN_PATH = Path(os.environ.get("TOKEN_PATH", BASE_DIR / "token.json"))
 STATIC_DIR = BASE_DIR / "static"
+
+# Redis / cache
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
 # Outreach automation shared runtime state
 IMAP_SYNC_INTERVAL = 30  # background IMAP check interval in seconds. 0 or negative means manual only.

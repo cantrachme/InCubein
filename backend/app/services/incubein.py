@@ -429,7 +429,7 @@ def process_seed_support_rejections(req):
 
         cursor = list(db["incubein_applications"].find(query))
 
-        from .templates import get_email_template, get_default_template, render_template
+        from .templates import get_email_template, get_default_template, render_template, interpolate_variables, resolve_template_attachments
         from .settings import get_settings
         from .email import get_smtp_config, send_outreach_single
         from .email_logs import log_email_send
@@ -438,6 +438,14 @@ def process_seed_support_rejections(req):
         smtp_cfg = get_smtp_config()
         sender_email = smtp_cfg["sender_email"]
         is_smtp_ready = smtp_cfg["is_smtp_ready"]
+
+        tpl_cc = (tpl.get("cc") or "").strip() if tpl else ""
+        tpl_bcc = (tpl.get("bcc") or "").strip() if tpl else ""
+        tpl_attachments = resolve_template_attachments(tpl.get("key", "")) if tpl else []
+        if tpl_cc:
+            tpl_cc = interpolate_variables(tpl_cc, {"StartupName": ""})
+        if tpl_bcc:
+            tpl_bcc = interpolate_variables(tpl_bcc, {"StartupName": ""})
 
         sent_count = 0
         skipped_count = 0
@@ -487,7 +495,7 @@ def process_seed_support_rejections(req):
 
             email_sent = False
             if is_smtp_ready and subject and body_text:
-                email_sent = send_outreach_single(smtp_cfg, sender_email, email, subject, body_text, cc=tpl.get("cc") or "")
+                email_sent = send_outreach_single(smtp_cfg, sender_email, email, subject, body_text, cc=tpl_cc, bcc=tpl_bcc, attachments=tpl_attachments)
                 if email_sent:
                     sent_count += 1
             else:

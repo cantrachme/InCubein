@@ -1,0 +1,32 @@
+# Secrets
+.env
+*.env
+token.json
+app/token.json
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+env
+venv
+.venv
+ENV
+
+# Data & runtime artifacts (mounted as volumes in production)
+*.db
+*.sqlite
+*.sqlite3
+*.xlsx
+scratch
+attachments
+app/static
+
+# Build/IDE
+node_modules
+dist
+build
+.vscode
+.idea
+.DS_Store

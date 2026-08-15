@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { toast } from "react-toastify";
 import {
   FileText,
@@ -9,6 +9,9 @@ import {
   X,
   Loader2,
   Copy,
+  Paperclip,
+  Upload,
+  Download,
 } from "lucide-react";
 
 const CATEGORIES = ["startups", "incubators", "followup", "general"];
@@ -20,6 +23,7 @@ const EMPTY_FORM = {
   subject: "",
   body: "",
   cc: "",
+  bcc: "",
   is_default: false,
 };
 
@@ -43,6 +47,9 @@ export default function TemplatesTab() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [preview, setPreview] = useState(null);
+  const [attachments, setAttachments] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef(null);
 
   const fetchTemplates = async () => {
     setLoading(true);
@@ -59,6 +66,21 @@ export default function TemplatesTab() {
     }
   };
 
+  const fetchAttachments = async (key) => {
+    if (!key) {
+      setAttachments([]);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/templates/${key}/attachments`, { cache: "no-store" });
+      const data = await res.json();
+      setAttachments(Array.isArray(data) ? data : []);
+    } catch (e) {
+      console.error(e);
+      setAttachments([]);
+    }
+  };
+
   useEffect(() => {
     fetchTemplates();
   }, [category]);
@@ -66,6 +88,7 @@ export default function TemplatesTab() {
   const startNew = () => {
     setEditing("new");
     setForm({ ...EMPTY_FORM, category: category || "startups" });
+    setAttachments([]);
   };
 
   const startEdit = (tpl) => {
@@ -77,13 +100,16 @@ export default function TemplatesTab() {
       subject: tpl.subject || "",
       body: tpl.body || "",
       cc: tpl.cc || "",
+      bcc: tpl.bcc || "",
       is_default: !!tpl.is_default,
     });
+    fetchAttachments(tpl.key);
   };
 
   const cancelEdit = () => {
     setEditing(null);
     setForm(EMPTY_FORM);
+    setAttachments([]);
   };
 
   const saveTemplate = async () => {
@@ -101,8 +127,15 @@ export default function TemplatesTab() {
       const data = await res.json();
       if (res.ok && data.status !== "error") {
         toast.success(editing === "new" ? "Template created." : "Template updated.");
-        setEditing(null);
-        setForm(EMPTY_FORM);
+        if (editing === "new" && data.key) {
+          setEditing(data.key);
+          setForm(prev => ({ ...prev, key: data.key }));
+          fetchAttachments(data.key);
+        } else {
+          setEditing(null);
+          setForm(EMPTY_FORM);
+          setAttachments([]);
+        }
         fetchTemplates();
       } else {
         toast.error(data.message || data.detail || "Failed to save template.");
@@ -112,6 +145,53 @@ export default function TemplatesTab() {
       toast.error("Failed to connect to backend.");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const uploadAttachment = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file || !editing || editing === "new") {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+    setUploading(true);
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      const res = await fetch(`/api/templates/${editing}/attachments`, {
+        method: "POST",
+        body: fd,
+      });
+      const data = await res.json();
+      if (res.ok && data.status !== "error") {
+        toast.success(`Attached "${file.name}".`);
+        fetchAttachments(editing);
+      } else {
+        toast.error(data.detail || data.message || "Failed to upload attachment.");
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to upload attachment.");
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const deleteAttachment = async (att) => {
+    if (!window.confirm(`Remove attachment "${att.filename}"?`)) return;
+    try {
+      const res = await fetch(`/api/templates/${editing}/attachments/${att.id}`, { method: "DELETE" });
+      const data = await res.json();
+      if (res.ok && data.deleted) {
+        toast.success("Attachment removed.");
+        fetchAttachments(editing);
+      } else {
+        toast.error(data.detail || data.message || "Failed to remove attachment.");
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to connect to backend.");
     }
   };
 
@@ -204,6 +284,10 @@ export default function TemplatesTab() {
               <label style={style.label}>CC (comma separated, optional)</label>
               <input className="form-input" style={{ marginTop: "4px" }} value={form.cc} onChange={(e) => setForm({ ...form, cc: e.target.value })} />
             </div>
+            <div>
+              <label style={style.label}>BCC (comma separated, optional)</label>
+              <input className="form-input" style={{ marginTop: "4px" }} value={form.bcc} onChange={(e) => setForm({ ...form, bcc: e.target.value })} />
+            </div>
             <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", alignSelf: "end" }}>
               <input type="checkbox" checked={form.is_default} onChange={(e) => setForm({ ...form, is_default: e.target.checked })} />
               <label style={style.label}>Set as default for category</label>
@@ -232,6 +316,55 @@ export default function TemplatesTab() {
               onChange={(e) => setForm({ ...form, body: e.target.value })}
             />
           </div>
+          {editing !== "new" ? (
+            <div style={{ marginBottom: "1rem", padding: "0.75rem 1rem", background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "8px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.5rem", marginBottom: "0.5rem" }}>
+                <label style={{ ...style.label, display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                  <Paperclip size={13} style={{ color: "var(--primary)" }} /> Attachments (sent with every email using this template)
+                </label>
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    style={{ display: "none" }}
+                    onChange={uploadAttachment}
+                  />
+                  <button className="btn btn-outline" style={{ display: "inline-flex", alignItems: "center", gap: "0.3rem", fontSize: "0.75rem" }} onClick={() => fileInputRef.current && fileInputRef.current.click()} disabled={uploading}>
+                    {uploading ? <Loader2 size={12} className="spin" /> : <Upload size={12} />}
+                    {uploading ? "Uploading…" : "Add Attachment"}
+                  </button>
+                </div>
+              </div>
+              {attachments.length === 0 ? (
+                <p style={{ margin: 0, fontSize: "0.8rem", color: "var(--text-dim)" }}>No attachments yet. Add files (PDF, DOCX, images, etc.) to include them automatically when this template is used.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+                  {attachments.map(att => (
+                    <div key={att.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.5rem", padding: "0.4rem 0.6rem", background: "var(--bg-card)", border: "1px solid var(--border-color)", borderRadius: "6px" }}>
+                      <a
+                        href={`/api/templates/${editing}/attachments/${att.id}/download`}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "0.8rem", color: "var(--primary)", textDecoration: "none", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}
+                        title="Download"
+                      >
+                        <Download size={12} />
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{att.filename}</span>
+                        <span style={{ color: "var(--text-dim)", fontSize: "0.7rem" }}>({(att.size / 1024).toFixed(1)} KB)</span>
+                      </a>
+                      <button className="btn btn-ghost btn-icon" title="Remove" style={{ color: "var(--danger)" }} onClick={() => deleteAttachment(att)}>
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <p style={{ marginBottom: "1rem", fontSize: "0.75rem", color: "var(--text-dim)" }}>
+              Save the template first to manage attachments.
+            </p>
+          )}
           <button className="btn btn-primary" onClick={saveTemplate} disabled={saving}>
             {saving ? <Loader2 size={14} className="spin" style={{ marginRight: "6px" }} /> : <Save size={14} style={{ marginRight: "6px" }} />}
             Save Template
@@ -280,6 +413,13 @@ export default function TemplatesTab() {
         {preview && (
           <div style={{ marginTop: "1rem", background: "var(--bg-surface)", borderRadius: "8px", padding: "1rem", border: "1px solid var(--border-color)" }}>
             <strong style={{ fontSize: "0.85rem" }}>Subject:</strong> <span style={{ fontSize: "0.8rem" }}>{preview.subject}</span>
+            {(preview.cc || preview.bcc || (preview.attachments && preview.attachments.length > 0)) && (
+              <div style={{ marginTop: "0.5rem", fontSize: "0.75rem", color: "var(--text-secondary)", display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+                {preview.cc && <span>CC: <code>{preview.cc}</code></span>}
+                {preview.bcc && <span>BCC: <code>{preview.bcc}</code></span>}
+                {(preview.attachments || []).length > 0 && <span>📎 {preview.attachments.length} attachment(s)</span>}
+              </div>
+            )}
             <hr style={{ border: "none", borderTop: "1px solid var(--border-color)", margin: "0.75rem 0" }} />
             <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", fontSize: "0.8rem", lineHeight: "1.6", color: "var(--text-body)" }}>{preview.body}</pre>
           </div>

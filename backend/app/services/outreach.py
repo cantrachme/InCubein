@@ -25,7 +25,7 @@ from ..schemas.outreach import (
 )
 from .email import get_smtp_config, send_outreach_single, send_plain_email
 from .settings import get_settings, get_setting, update_settings
-from .templates import get_email_template, get_default_template, render_template
+from .templates import get_email_template, get_default_template, render_template, interpolate_variables, resolve_template_attachments
 from .email_logs import log_email_send
 
 
@@ -341,9 +341,13 @@ def trigger_outreach_email(req: OutreachEmailRequest):
     body_text = req.body
     template_key = getattr(req, "template_id", None) or ""
 
+    tpl = None
+    if template_key:
+        tpl = get_email_template(template_key)
+
     if not subject or not body_text:
         entity_kind = "startup" if is_startup else "incubator"
-        tpl = _pick_template(entity_kind, template_key)
+        tpl = tpl or _pick_template(entity_kind, template_key)
         if tpl:
             rendered = render_template(tpl, _context_for_entity(lead))
             subject = subject or rendered["subject"]
@@ -355,8 +359,21 @@ def trigger_outreach_email(req: OutreachEmailRequest):
         conn.close()
         raise BadRequestError("No subject/body provided and no matching template found.")
 
+    context = _context_for_entity(lead)
+    subject = interpolate_variables(subject, context)
+    body_text = interpolate_variables(body_text, context)
+
+    cc = (req.cc or "").strip()
+    bcc = (req.bcc or "").strip()
+    if tpl:
+        cc = cc or (tpl.get("cc") or "").strip()
+        bcc = bcc or (tpl.get("bcc") or "").strip()
+    cc = interpolate_variables(cc, context) if cc else ""
+    bcc = interpolate_variables(bcc, context) if bcc else ""
+    attachments = resolve_template_attachments(template_key) if template_key else []
+
     email_sent_successfully = send_outreach_single(
-        smtp_cfg, sender_email, lead["email"], subject, body_text, cc=req.cc
+        smtp_cfg, sender_email, lead["email"], subject, body_text, cc=cc, bcc=bcc, attachments=attachments
     )
 
     cursor.execute(
@@ -460,16 +477,28 @@ def trigger_mass_send(req: MassSendRequest):
     entity_kind = "startup" if req.target_type == "startups" else "incubator"
     tpl = _pick_template(entity_kind, getattr(req, "template_id", None) or "")
 
+    cc = (req.cc or "").strip()
+    bcc = (req.bcc or "").strip()
+    if tpl:
+        cc = cc or (tpl.get("cc") or "").strip()
+        bcc = bcc or (tpl.get("bcc") or "").strip()
+    cc = interpolate_variables(cc, {"_settings": settings}) if cc else ""
+    bcc = interpolate_variables(bcc, {"_settings": settings}) if bcc else ""
+    template_key = tpl.get("key", "") if tpl else ""
+    attachments = resolve_template_attachments(template_key) if template_key else []
+
     sent_count = 0
     simulated_count = 0
     processed = 0
 
     for lead in leads:
+        ctx = _context_for_entity(lead)
+        ctx["_settings"] = settings
         # Resolve subject/body: explicit overrides, else rendered template.
         subject_to_send = req.subject
         body_to_send = req.body
         if (not subject_to_send or not body_to_send) and tpl:
-            rendered = render_template(tpl, _context_for_entity(lead))
+            rendered = render_template(tpl, ctx)
             subject_to_send = subject_to_send or rendered["subject"]
             body_to_send = body_to_send or rendered["body"]
 
@@ -479,16 +508,14 @@ def trigger_mass_send(req: MassSendRequest):
         if not body_to_send:
             body_to_send = f"Hello {lead['incubator_name']},\n\nGreetings from Incubein Foundation RTM Nagpur University.\n\nWe would love to schedule a 30-minute Google Meet at your convenience.\n\nWarm regards,\n\nTeam Incubein Foundation"
 
-        # Interpolate name placeholders if present
-        if body_to_send:
-            body_to_send = body_to_send.replace("{StartupName}", lead["incubator_name"]).replace("{IncubatorName}", lead["incubator_name"])
-        if subject_to_send:
-            subject_to_send = subject_to_send.replace("{StartupName}", lead["incubator_name"]).replace("{IncubatorName}", lead["incubator_name"])
+        # Interpolate any remaining placeholders (names, org branding, etc.)
+        subject_to_send = interpolate_variables(subject_to_send, ctx)
+        body_to_send = interpolate_variables(body_to_send, ctx)
 
         email_sent = False
         if is_smtp_ready:
             email_sent = send_outreach_single(
-                smtp_cfg, sender_email, lead["email"], subject_to_send, body_to_send, cc=req.cc
+                smtp_cfg, sender_email, lead["email"], subject_to_send, body_to_send, cc=cc, bcc=bcc, attachments=attachments
             )
             if email_sent:
                 sent_count += 1
@@ -551,6 +578,7 @@ def dispatch_campaign(campaign_id: str):
     subject = campaign.get("subject") or ""
     body = campaign.get("body") or ""
     cc = campaign.get("cc") or ""
+    bcc = campaign.get("bcc") or ""
     template_key = campaign.get("template_id") or ""
 
     leads = []
@@ -604,6 +632,12 @@ def dispatch_campaign(campaign_id: str):
     if not tpl:
         tpl = _pick_template(entity_kind, None)
 
+    cc = (cc or "").strip() or ((tpl.get("cc") or "").strip() if tpl else "")
+    bcc = (bcc or "").strip() or ((tpl.get("bcc") or "").strip() if tpl else "")
+    cc = interpolate_variables(cc, {"_settings": settings}) if cc else ""
+    bcc = interpolate_variables(bcc, {"_settings": settings}) if bcc else ""
+    attachments = resolve_template_attachments(tpl.get("key", "")) if tpl else []
+
     update_campaign(campaign_id, {"status": "sending"})
 
     sent_count = 0
@@ -611,10 +645,12 @@ def dispatch_campaign(campaign_id: str):
     processed = 0
 
     for lead in leads:
+        ctx = _context_for_entity(lead)
+        ctx["_settings"] = settings
         subject_to_send = subject
         body_to_send = body
         if (not subject_to_send or not body_to_send) and tpl:
-            rendered = render_template(tpl, _context_for_entity(lead))
+            rendered = render_template(tpl, ctx)
             subject_to_send = subject_to_send or rendered["subject"]
             body_to_send = body_to_send or rendered["body"]
 
@@ -623,14 +659,13 @@ def dispatch_campaign(campaign_id: str):
         if not body_to_send:
             body_to_send = f"Hello {lead.get('incubator_name', '')},\n\nGreetings from Incubein Foundation RTM Nagpur University.\n\nWarm regards,\n\nTeam Incubein Foundation"
 
-        if body_to_send:
-            body_to_send = body_to_send.replace("{StartupName}", lead.get("incubator_name", "")).replace("{IncubatorName}", lead.get("incubator_name", ""))
-        if subject_to_send:
-            subject_to_send = subject_to_send.replace("{StartupName}", lead.get("incubator_name", "")).replace("{IncubatorName}", lead.get("incubator_name", ""))
+        # Interpolate any remaining placeholders (names, org branding, etc.)
+        subject_to_send = interpolate_variables(subject_to_send, ctx)
+        body_to_send = interpolate_variables(body_to_send, ctx)
 
         email_sent = False
         if is_smtp_ready:
-            email_sent = send_outreach_single(smtp_cfg, sender_email, lead["email"], subject_to_send, body_to_send, cc=cc)
+            email_sent = send_outreach_single(smtp_cfg, sender_email, lead["email"], subject_to_send, body_to_send, cc=cc, bcc=bcc, attachments=attachments)
             if email_sent:
                 sent_count += 1
             else:

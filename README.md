@@ -72,46 +72,52 @@ Open `http://localhost:5173` in your web browser to access the dashboard.
 
 ---
 
-## Production Deployment with Docker
+## Docker Quick Start
 
-The repo ships a production-ready Docker stack: **nginx** (serves the built React app and proxies `/api` to FastAPI), **FastAPI backend**, **Redis** (cache/queueing, with persistence and healthchecks), and **MongoDB** (Atlas by default, optional self-hosted service).
+For a self-contained local installation, the client only needs Git and Docker Desktop. MongoDB and Redis are included in the stack, so no account, database installation, or environment file is required.
+
+```bash
+git clone https://github.com/cantrachme/InCubein.git
+cd InCubein
+docker compose build
+docker compose up
+```
+
+Open `http://localhost:8000`. The health endpoint is available at `http://localhost:8000/health`.
+
+The stack contains **nginx** (serves the React app and proxies `/api`), **FastAPI**, **Redis**, and **MongoDB**.
 
 ```
 docker-compose.yml
 ├── frontend/   # nginx:1.27-alpine -> built SPA + /api proxy
 ├── backend/    # python:3.11-slim  -> FastAPI (uvicorn :8000)
 ├── redis       # redis:7-alpine     -> AOF persistence, healthchecked
-└── mongo       # optional (commented) self-hosted MongoDB
+└── mongo       # local persistent MongoDB
 ```
 
-### 1. Prepare environment variables
+### Optional integrations
 
-```bash
-# Deployment-level vars (PORT, REDIS_PASSWORD) — docker-compose reads root `.env`
-cp .env.example .env
-
-# Application secrets (SMTP, IMAP, Google OAuth, MONGO_URI, AI keys)
-cp backend/.env.example backend/.env   # fill in real values
-```
+The dashboard starts without third-party credentials. To enable email, Google Calendar, or AI providers, copy `backend/.env.example` to `backend/.env` and add the required values. To change the website port or use a managed MongoDB deployment, copy the root `.env.example` to `.env` and update `PORT` or `MONGO_URI` there.
 
 **Production notes:**
 - Set `GOOGLE_REDIRECT_URI` to your public URL, e.g. `https://your-domain/api/outreach/oauth2callback`.
 - `backend/.env` and root `.env` are gitignored — never commit secrets.
 - In real production put a TLS-terminating reverse proxy (nginx/caddy/Traefik/cloud LB) in front of `PORT`.
 
-### 2. Build & start
+### Running and stopping
 
 ```bash
-docker compose up -d --build
+docker compose build
+docker compose up
 
 # Check status + logs
 docker compose ps
-docker compose logs -f backend frontend redis
+docker compose logs -f backend frontend redis mongo
 ```
 
-The app is served at `http://localhost` (or `PORT` if overridden). The backend health endpoint is available at `http://localhost/health`.
+The app is served at `http://localhost:8000` by default, or the `PORT` configured in a root `.env` file.
 
-### 3. Updates & maintenance
+### Updates and maintenance
 
 ```bash
 docker compose build && docker compose up -d          # deploy new code
@@ -119,7 +125,7 @@ docker compose down                                    # stop (keeps volumes)
 docker compose down -v                                 # stop + wipe redis/data volumes
 ```
 
-Persistent data lives in named volumes: `redis-data`, `scratch-data` (email logs), `attachments-data` (template files), `token-data` (Google OAuth token).
+Persistent data lives in named volumes: `mongo-data`, `redis-data`, `scratch-data` (email logs), `attachments-data` (template files), and `token-data` (Google OAuth token).
 
 ### Redis usage
 

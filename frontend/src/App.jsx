@@ -228,11 +228,11 @@ export default function App() {
       case "timeline":
         return <TimelineDashboard />;
       case "directory":
-        return <DirectoryView filtersData={analyticsData ? analyticsData.filters : null} onDraftMou={handleDraftMouFromFinder} />;
+        return <DirectoryView filtersData={analyticsData ? analyticsData.filters : null} onDraftMou={handleDraftMouFromFinder} onDataChanged={fetchEcosystemData} />;
       case "outreach":
         return <OutreachAutomation preselectedIncubatorName={mouPreselectedIncubator} refreshTrigger={outreachRefreshTrigger} />;
       case "startups_directory":
-        return <StartupsDirectory />;
+        return <StartupsDirectory onDataChanged={fetchEcosystemData} />;
       case "cohort_evaluator":
         return <CohortEvaluator />;
       case "enrichment_hub":
@@ -388,5 +388,4 @@ export default function App() {
     </div>
   );
 }
-
 

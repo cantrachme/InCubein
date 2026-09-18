@@ -128,7 +128,7 @@ export default function CohortEvaluator() {
         fetchApplications();
         setCheckedIds([]);
       } else {
-        toast.error(result.detail || result.message || "Failed to process Excel file.");
+        toast.error(result.detail || result.message || "Failed to process spreadsheet.");
       }
     } catch (e) {
       console.error(e);
@@ -528,10 +528,10 @@ export default function CohortEvaluator() {
 
           <label className={`btn btn-primary ${uploading ? "disabled" : ""}`} style={{ cursor: "pointer" }}>
             <Upload size={14} style={{ marginRight: "6px" }} />
-            {uploading ? "Processing Applications..." : "Upload Cohort Excel"}
+            {uploading ? "Processing Applications..." : "Upload Cohort CSV / Excel"}
             <input
               type="file"
-              accept=".xlsx, .xls"
+              accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
               onChange={handleFileUpload}
               disabled={uploading}
               style={{ display: "none" }}
@@ -578,7 +578,7 @@ export default function CohortEvaluator() {
             Upload Applications Sheet
             <input
               type="file"
-              accept=".xlsx, .xls"
+              accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
               onChange={handleFileUpload}
               style={{ display: "none" }}
             />

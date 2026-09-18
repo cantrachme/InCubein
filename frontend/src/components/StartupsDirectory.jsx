@@ -12,7 +12,7 @@ const STAGE_COLORS = {
   "Seed Stage":     { bg: "#ECFDF5", text: "#065F46", border: "#A7F3D0" },
 };
 
-export default function StartupsDirectory() {
+export default function StartupsDirectory({ onDataChanged }) {
   const [startups, setStartups] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -28,7 +28,7 @@ export default function StartupsDirectory() {
   const [addingToCampaign, setAddingToCampaign] = useState(false);
   const [uploading, setUploading] = useState(false);
 
-  const handleUploadExcel = async (e) => {
+  const handleUploadFile = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     e.target.value = "";
@@ -47,8 +47,9 @@ export default function StartupsDirectory() {
       if (res.ok && result.status === "success") {
         toast.success(result.message);
         fetchStartups();
+        onDataChanged?.();
       } else {
-        toast.error(result.detail || result.message || "Failed to import Excel file.");
+        toast.error(result.detail || result.message || "Failed to import spreadsheet.");
       }
     } catch (err) {
       console.error(err);
@@ -175,11 +176,11 @@ export default function StartupsDirectory() {
         <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
           <label className={`btn btn-secondary ${uploading ? "disabled" : ""}`} style={{ cursor: "pointer", margin: 0 }}>
             <Upload size={14} style={{ marginRight: "6px" }} />
-            {uploading ? "Importing..." : "Upload Excel"}
+            {uploading ? "Importing..." : "Upload CSV / Excel"}
             <input
               type="file"
-              accept=".xlsx, .xls"
-              onChange={handleUploadExcel}
+              accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              onChange={handleUploadFile}
               disabled={uploading}
               style={{ display: "none" }}
             />

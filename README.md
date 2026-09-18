@@ -85,6 +85,8 @@ docker compose up
 
 Open `http://localhost:8000`. The health endpoint is available at `http://localhost:8000/health`.
 
+The bundled, privacy-safe ecosystem snapshot is loaded automatically on the first start. It restores the full directory, cohort, CRM, outreach, execution, commercial, university, and analytics data structure while replacing personal/contact content and excluding credentials. CSV or Excel uploads from the incubator and startup directories append new, non-duplicate records and refresh the analytics; they do not replace the existing dataset.
+
 The stack contains **nginx** (serves the React app and proxies `/api`), **FastAPI**, **Redis**, and **MongoDB**.
 
 ```

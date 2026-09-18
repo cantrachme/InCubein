@@ -15,6 +15,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY run.py .
+COPY ecosystem.db .
+COPY seed ./seed
 COPY app ./app
 
 # Writable runtime dirs (scratch logs, template attachments, OAuth token).

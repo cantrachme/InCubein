@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { toast } from "react-toastify";
 import { Search, MapPin, Globe, Mail, Phone, ExternalLink, Calendar, Building, HelpCircle, Layers, FileSignature, Send, X, Trash2, Upload } from "lucide-react";
 
-export default function DirectoryView({ filtersData, onDraftMou }) {
+export default function DirectoryView({ filtersData, onDraftMou, onDataChanged }) {
   const [incubators, setIncubators] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -14,7 +14,7 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
   const [sortMode, setSortMode] = useState("name");
   const [uploading, setUploading] = useState(false);
 
-  const handleUploadExcel = async (e) => {
+  const handleUploadFile = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     e.target.value = "";
@@ -33,8 +33,9 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
       if (res.ok && result.status === "success") {
         toast.success(result.message);
         fetchIncubators();
+        onDataChanged?.();
       } else {
-        toast.error(result.detail || result.message || "Failed to import Excel file.");
+        toast.error(result.detail || result.message || "Failed to import spreadsheet.");
       }
     } catch (err) {
       console.error(err);
@@ -301,11 +302,11 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
         <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
           <label className={`btn btn-secondary ${uploading ? "disabled" : ""}`} style={{ cursor: "pointer", margin: 0 }}>
             <Upload size={14} style={{ marginRight: "6px" }} />
-            {uploading ? "Importing..." : "Upload Excel"}
+            {uploading ? "Importing..." : "Upload CSV / Excel"}
             <input
               type="file"
-              accept=".xlsx, .xls"
-              onChange={handleUploadExcel}
+              accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              onChange={handleUploadFile}
               disabled={uploading}
               style={{ display: "none" }}
             />
@@ -765,4 +766,3 @@ export default function DirectoryView({ filtersData, onDraftMou }) {
     </div>
   );
 }
-

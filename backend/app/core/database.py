@@ -4,7 +4,9 @@ import os
 import sys
 import re
 import threading
+import gzip
 import pymongo
+from bson.json_util import loads as bson_loads
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -20,6 +22,7 @@ else:
     _data_dir = str(APP_DATA_DIR)
 
 DB_PATH = os.path.join(_data_dir, "ecosystem.db")
+SEED_SNAPSHOT_PATH = os.path.join(_data_dir, "seed", "ecosystem_seed.json.gz")
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017/")
 
 _mongo_client = None
@@ -691,9 +694,37 @@ def ensure_indexes(db):
                 print(f"Index build skipped for {collection}{keys}: {e}")
 
 
+def seed_sanitized_snapshot(db):
+    """Load the bundled privacy-safe dataset into otherwise empty collections."""
+    if not os.path.exists(SEED_SNAPSHOT_PATH):
+        return
+
+    try:
+        with gzip.open(SEED_SNAPSHOT_PATH, "rt", encoding="utf-8") as seed_file:
+            snapshot = bson_loads(seed_file.read())
+        if not snapshot.get("sanitized") or snapshot.get("version") != 1:
+            raise ValueError("Unsupported or unsanitized seed snapshot.")
+
+        for collection, documents in snapshot.get("collections", {}).items():
+            try:
+                if collection not in db.list_collection_names():
+                    db.create_collection(collection)
+                if db[collection].count_documents({}) == 0 and documents:
+                    db[collection].insert_many(documents, ordered=False)
+                    print(f"Seeded {len(documents)} sanitized records into '{collection}'...")
+            except Exception as collection_exc:
+                print(f"Sanitized seed skipped '{collection}': {collection_exc}")
+    except Exception as exc:
+        print(f"Sanitized seed snapshot failed: {exc}")
+
+
 def init_db():
     client = get_mongo_client()
     db = client.get_database("ecosystem")
+
+    # A fresh local Docker install starts with the complete privacy-safe snapshot.
+    # Existing collections are never overwritten, so later client uploads persist.
+    seed_sanitized_snapshot(db)
 
     # Build indexes in the background so the server binds immediately even when
     # a production collection is large and create_index is slow.
@@ -767,5 +798,3 @@ def clear_all_tables():
     cursor.execute("DELETE FROM scheduled_meetings")
 
 init_db()
-
-

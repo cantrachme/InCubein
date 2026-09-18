@@ -1,6 +1,7 @@
 import json
 import math
 import io
+import csv
 import uuid
 from collections import Counter
 from datetime import datetime
@@ -236,20 +237,47 @@ _INCUBATOR_COL_ORDER = [
 ]
 
 
-def import_directory_excel(contents: bytes, entity_type: str = "startup"):
-    """Import rows from an uploaded Excel file directly into the startups /
-    incubators directory collection. Skips rows without a name and rows that
-    duplicate an existing record (matched by name)."""
-    try:
+def _read_directory_rows(contents: bytes):
+    """Return headers, rows, and a source label for CSV or XLSX content."""
+    if contents.startswith(b"PK"):
         import openpyxl
+
         wb = openpyxl.load_workbook(io.BytesIO(contents), data_only=True)
         sheet = wb.active
         if sheet is None:
-            raise ServiceError("Excel file contains no sheets.")
+            raise ServiceError("Spreadsheet contains no sheets.")
+        values = list(sheet.iter_rows(values_only=True))
+        source_label = "Excel Upload"
+    else:
+        try:
+            text = contents.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = contents.decode("cp1252")
 
-        raw_headers = []
-        for cell in sheet[1]:
-            raw_headers.append(_safe_str(cell.value))
+        if not text.strip():
+            raise ServiceError("CSV file is empty.")
+        try:
+            dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t")
+        except csv.Error:
+            dialect = csv.excel
+        values = list(csv.reader(io.StringIO(text), dialect))
+        source_label = "CSV Upload"
+
+    if not values:
+        raise ServiceError("Spreadsheet contains no rows.")
+
+    headers = [_safe_str(value) for value in values[0]]
+    rows = [list(row) for row in values[1:] if any(_safe_str(value) for value in row)]
+    return headers, rows, source_label
+
+
+def import_directory_excel(contents: bytes, entity_type: str = "startup"):
+    """Append CSV/XLSX rows to the startup or incubator directory.
+
+    Rows without a name and records whose name already exists are skipped.
+    """
+    try:
+        raw_headers, data_rows, source_label = _read_directory_rows(contents)
 
         is_startup = entity_type == "startup"
         col_map = _STARTUP_COL_MAP if is_startup else _INCUBATOR_COL_MAP
@@ -264,7 +292,7 @@ def import_directory_excel(contents: bytes, entity_type: str = "startup"):
                     break
 
         if not header_idx:
-            return {"status": "error", "message": "Could not detect recognizable columns in the uploaded Excel file."}
+            return {"status": "error", "message": "Could not detect recognizable columns in the uploaded file."}
 
         collection = get_mongo_db()
         coll = collection["startups"] if is_startup else collection["incubators"]
@@ -273,12 +301,12 @@ def import_directory_excel(contents: bytes, entity_type: str = "startup"):
         skipped_count = 0
         created_at = datetime.now().isoformat()
 
-        for row_idx in range(2, sheet.max_row + 1):
+        for row_values in data_rows:
             def col_val(field):
                 i = header_idx.get(field)
-                if i is None or i >= len(raw_headers):
+                if i is None or i >= len(row_values):
                     return ""
-                return _safe_str(sheet.cell(row=row_idx, column=i + 1).value)
+                return _safe_str(row_values[i])
 
             if is_startup:
                 name = col_val("startup_name")
@@ -318,7 +346,7 @@ def import_directory_excel(contents: bytes, entity_type: str = "startup"):
                     "incubator_id": col_val("incubator_id") or "excel_upload",
                     "confidence_score": None,
                     "status": "Imported",
-                    "source_url": "Excel Upload",
+                    "source_url": source_label,
                     "last_updated": created_at,
                 }
                 record["stage_category"] = classify_startup_stage({
@@ -360,7 +388,7 @@ def import_directory_excel(contents: bytes, entity_type: str = "startup"):
                     "startup_count": startup_count,
                     "confidence_score": None,
                     "status": "resolved",
-                    "source_url": col_val("source_url") or "Excel Upload",
+                    "source_url": col_val("source_url") or source_label,
                     "last_updated": created_at,
                 }
 
@@ -379,7 +407,7 @@ def import_directory_excel(contents: bytes, entity_type: str = "startup"):
     except ServiceError:
         raise
     except Exception as e:
-        raise ServiceError(f"Failed to import excel to directory: {str(e)}")
+        raise ServiceError(f"Failed to import file to directory: {str(e)}")
 
 
 def get_graph():

@@ -1,5 +1,6 @@
 import os
 import io
+import csv
 import re
 import time
 import uuid
@@ -36,7 +37,21 @@ from .evaluator import (
 def process_cohort_excel(contents: bytes, entity_type: str):
     try:
         import openpyxl
-        wb = openpyxl.load_workbook(io.BytesIO(contents), data_only=True)
+        if contents.startswith(b"PK"):
+            wb = openpyxl.load_workbook(io.BytesIO(contents), data_only=True)
+        else:
+            try:
+                csv_text = contents.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                csv_text = contents.decode("cp1252")
+            try:
+                dialect = csv.Sniffer().sniff(csv_text[:4096], delimiters=",;\t")
+            except csv.Error:
+                dialect = csv.excel
+            wb = openpyxl.Workbook()
+            sheet = wb.active
+            for csv_row in csv.reader(io.StringIO(csv_text), dialect):
+                sheet.append(csv_row)
         sheet = wb.active
 
         headers, rows_data, header_map = extract_dynamic_rows_and_headers(sheet)
@@ -197,16 +212,41 @@ def process_cohort_excel(contents: bytes, entity_type: str):
             if "id_temp" in s:
                 del s["id_temp"]
 
-        # Save to MongoDB
+        # Append only new applications. Existing uploaded cohorts remain intact.
         db = get_mongo_db()
-        # Delete existing entries of the same entity_type (or all if unspecified)
-        db["incubein_applications"].delete_many({"$or": [{"entity_type": entity_type}, {"entity_type": {"$exists": False}}]})
-        db["incubein_applications"].insert_many(startups)
+        collection = db["incubein_applications"]
+        entity_query = {"$or": [{"entity_type": entity_type}, {"entity_type": {"$exists": False}}]}
+        existing_names = {
+            str(doc.get("startup_name") or "").strip().casefold()
+            for doc in collection.find(entity_query, {"startup_name": 1})
+        }
+        new_startups = []
+        skipped_count = 0
+        for startup in startups:
+            normalized_name = str(startup.get("startup_name") or "").strip().casefold()
+            if not normalized_name or normalized_name in existing_names:
+                skipped_count += 1
+                continue
+            existing_names.add(normalized_name)
+            new_startups.append(startup)
+
+        if new_startups:
+            collection.insert_many(new_startups)
+
+        # Keep one stable ranking across the existing and newly appended cohort.
+        ranked = collection.find(entity_query, {"final_score": 1}).sort([
+            ("final_score", -1),
+            ("_id", 1),
+        ])
+        for rank, application in enumerate(ranked, start=1):
+            collection.update_one({"_id": application["_id"]}, {"$set": {"rank": rank}})
 
         return {
             "status": "success",
-            "message": f"Successfully processed and stored {len(startups)} {entity_type} entries with {len(headers)} columns.",
-            "columns_count": len(headers)
+            "message": f"Appended {len(new_startups)} new {entity_type} entries ({skipped_count} duplicates skipped).",
+            "columns_count": len(headers),
+            "inserted_count": len(new_startups),
+            "skipped_count": skipped_count,
         }
     except Exception as e:
         raise ServiceError(f"Failed to process cohort excel: {str(e)}")

@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import re
+import threading
 import pymongo
 from datetime import datetime
 from dotenv import load_dotenv
@@ -26,7 +27,12 @@ _mongo_client = None
 def get_mongo_client():
     global _mongo_client
     if _mongo_client is None:
-        _mongo_client = pymongo.MongoClient(MONGO_URI)
+        # Fail fast when MongoDB is unreachable instead of hanging for ~30s.
+        _mongo_client = pymongo.MongoClient(
+            MONGO_URI,
+            serverSelectionTimeoutMS=5000,
+            connectTimeoutMS=5000,
+        )
     return _mongo_client
 
 def get_mongo_db():
@@ -572,9 +578,130 @@ def get_db_connection():
     db = get_mongo_db()
     return MongoConnection(db)
 
+INDEXES = {
+    # Outreach pipeline
+    "outreach_leads": [
+        [("id", 1), {"unique": True}],
+        [("incubator_id", 1)],
+        [("incubator_name", 1)],
+        [("status", 1)],
+        [("email", 1)],
+        [("reply_detected_at", -1)],
+        [("sent_at", -1)],
+        [("last_followup_at", -1)],
+    ],
+    "outreach_activity": [
+        [("lead_id", 1)],
+        [("created_at", -1)],
+        [("activity_type", 1)],
+        [("meeting_id", 1)],
+    ],
+    "scheduled_meetings": [
+        [("lead_id", 1)],
+        [("date", -1)],
+        [("status", 1)],
+    ],
+    # CRM core + execution
+    "crm_startups": [
+        [("id", 1), {"unique": True}],
+        [("name", 1)],
+        [("source_ref", 1)],
+        [("sector", 1)],
+        [("stage", 1)],
+    ],
+    "crm_action_plans": [
+        [("id", 1), {"unique": True}],
+        [("startup_id", 1)],
+    ],
+    "crm_actions": [
+        [("id", 1)],
+        [("startup_id", 1)],
+        [("plan_id", 1)],
+        [("deadline", 1)],
+    ],
+    "crm_milestones": [
+        [("id", 1)],
+        [("startup_id", 1)],
+        [("plan_id", 1)],
+        [("target_date", 1)],
+    ],
+    "crm_risks": [
+        [("id", 1)],
+        [("startup_id", 1)],
+        [("plan_id", 1)],
+        [("action_id", 1)],
+    ],
+    "crm_audits": [
+        [("id", 1)],
+        [("startup_id", 1)],
+        [("audit_date", -1)],
+    ],
+    "crm_founders": [
+        [("id", 1)],
+        [("startup_id", 1)],
+        [("name", 1)],
+        [("source_ref", 1)],
+    ],
+    "crm_activity": [
+        [("module", 1), ("record_id", 1)],
+        [("created_at", -1)],
+    ],
+    "crm_students": [
+        [("id", 1)],
+        [("college_id", 1)],
+        [("student_name", 1)],
+        [("source_ref", 1)],
+    ],
+    "crm_colleges": [
+        [("id", 1)],
+        [("name", 1)],
+        [("source_ref", 1)],
+    ],
+    "crm_funding": [
+        [("id", 1)],
+        [("startup_id", 1)],
+    ],
+    "crm_customers": [
+        [("id", 1)],
+        [("startup_id", 1)],
+    ],
+    "crm_deals": [
+        [("id", 1)],
+        [("startup_id", 1)],
+    ],
+    "crm_financials": [
+        [("id", 1)],
+        [("startup_id", 1)],
+    ],
+}
+
+
+def ensure_indexes(db):
+    """Idempotently build the indexes the hot query paths rely on."""
+    for collection, specs in INDEXES.items():
+        for spec in specs:
+            # spec is either [("field", 1)] or [("field", 1), {"unique": True}]
+            if len(spec) == 2 and isinstance(spec[-1], dict):
+                keys, options = [spec[0]], spec[-1]
+            else:
+                keys, options = list(spec), {}
+            try:
+                db[collection].create_index(keys, **options)
+            except Exception as e:
+                print(f"Index build skipped for {collection}{keys}: {e}")
+
+
 def init_db():
     client = get_mongo_client()
     db = client.get_database("ecosystem")
+
+    # Build indexes in the background so the server binds immediately even when
+    # a production collection is large and create_index is slow.
+    def _build_indexes():
+        ensure_indexes(db)
+        log_pipeline_step("SYSTEM", "SUCCESS", "Ecosystem MongoDB indexes ensured.")
+
+    threading.Thread(target=_build_indexes, daemon=True).start()
     
     # Automatic Migration from SQLite per table
     sqlite_db_exists = os.path.exists(DB_PATH)

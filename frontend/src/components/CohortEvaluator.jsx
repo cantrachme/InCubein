@@ -24,6 +24,15 @@ import {
 } from "lucide-react";
 import { toast } from "react-toastify";
 
+const STAGE_COLORS = {
+  "Ideation":       { bg: "#EEF2FF", text: "#4338CA", border: "#C7D2FE" },
+  "Prototype":      { bg: "#F0FDF4", text: "#166534", border: "#BBF7D0" },
+  "MVP/Pre-Revenue": { bg: "#FFF7ED", text: "#9A3412", border: "#FED7AA" },
+  "Revenue":        { bg: "#FEF2F2", text: "#991B1B", border: "#FECACA" },
+  "Growth/Scaling": { bg: "#FDF4FF", text: "#86198F", border: "#F0ABFC" },
+  "Seed Stage":     { bg: "#ECFDF5", text: "#065F46", border: "#A7F3D0" },
+};
+
 export default function CohortEvaluator() {
   const [entityMode, setEntityMode] = useState("startup"); // "startup" | "incubator"
   const [applications, setApplications] = useState([]);
@@ -236,6 +245,27 @@ export default function CohortEvaluator() {
     setCheckedIds(prev => 
       prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
     );
+  };
+
+  const handleUpdatePriority = async (appId, priority) => {
+    if (!appId) return;
+    try {
+      const res = await fetch("/api/incubein/applications/priority", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ app_id: appId, priority }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setApplications(prev => prev.map(a => (a._id === appId ? { ...a, priority } : a)));
+        setSelectedApp(prev => (prev && prev._id === appId ? { ...prev, priority } : prev));
+        toast.success(data.message || `Priority set to ${priority}.`);
+      } else {
+        toast.error(data.detail || "Failed to update priority.");
+      }
+    } catch (e) {
+      toast.error("Network error.");
+    }
   };
 
   const toggleAllCheck = (visibleApps) => {
@@ -743,9 +773,23 @@ export default function CohortEvaluator() {
                           </td>
                           <td style={{ padding: "14px 16px", fontSize: "0.82rem" }} onClick={() => setSelectedApp(app)}>{app.sector}</td>
                           <td style={{ padding: "14px 16px" }} onClick={() => setSelectedApp(app)}>
-                            <span className="badge" style={{ background: "var(--bg-dark)", color: "var(--text-primary)", fontSize: "0.72rem" }}>
-                              {app.stage}
-                            </span>
+                            {app.stage_category && STAGE_COLORS[app.stage_category] ? (
+                              <span style={{
+                                fontSize: "0.7rem",
+                                fontWeight: 700,
+                                padding: "3px 8px",
+                                borderRadius: "10px",
+                                background: STAGE_COLORS[app.stage_category].bg,
+                                color: STAGE_COLORS[app.stage_category].text,
+                                border: `1px solid ${STAGE_COLORS[app.stage_category].border}`,
+                              }}>
+                                {app.stage_category}
+                              </span>
+                            ) : (
+                              <span className="badge" style={{ background: "var(--bg-dark)", color: "var(--text-primary)", fontSize: "0.72rem" }}>
+                                {app.stage}
+                              </span>
+                            )}
                           </td>
                           <td style={{ padding: "14px 16px" }} onClick={() => setSelectedApp(app)}>
                             <span style={{
@@ -830,6 +874,19 @@ export default function CohortEvaluator() {
                 </div>
 
                 <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                  {selectedApp.stage_category && STAGE_COLORS[selectedApp.stage_category] && (
+                    <span style={{
+                      fontSize: "0.74rem",
+                      fontWeight: 700,
+                      padding: "4px 10px",
+                      borderRadius: "6px",
+                      background: STAGE_COLORS[selectedApp.stage_category].bg,
+                      color: STAGE_COLORS[selectedApp.stage_category].text,
+                      border: `1px solid ${STAGE_COLORS[selectedApp.stage_category].border}`,
+                    }}>
+                      {selectedApp.stage_category}
+                    </span>
+                  )}
                   <span style={{ fontSize: "0.74rem", background: "var(--bg-dark)", padding: "4px 8px", borderRadius: "4px", color: "var(--text-primary)" }}>
                     Sector: {selectedApp.sector}
                   </span>
@@ -1244,7 +1301,23 @@ export default function CohortEvaluator() {
                   {/* Sector / Stage */}
                   <div style={{ height: "40px", fontSize: "0.8rem", color: "var(--text-primary)" }}>
                     <div style={{ fontWeight: 600 }}>{app.sector}</div>
-                    <div style={{ color: "var(--text-muted)", fontSize: "0.74rem" }}>{app.stage}</div>
+                    <div style={{ color: "var(--text-muted)", fontSize: "0.74rem" }}>
+                      {app.stage_category && STAGE_COLORS[app.stage_category] && (
+                        <span style={{
+                          fontSize: "0.65rem",
+                          fontWeight: 700,
+                          padding: "1px 6px",
+                          borderRadius: "8px",
+                          background: STAGE_COLORS[app.stage_category].bg,
+                          color: STAGE_COLORS[app.stage_category].text,
+                          border: `1px solid ${STAGE_COLORS[app.stage_category].border}`,
+                          marginRight: "4px",
+                        }}>
+                          {app.stage_category}
+                        </span>
+                      )}
+                      {app.stage}
+                    </div>
                   </div>
 
                   {/* Final Score / Rank */}

@@ -1,13 +1,15 @@
 import React, { useState } from "react";
-import { Settings2, FileText, Megaphone } from "lucide-react";
+import { Settings2, FileText, Megaphone, Users2 } from "lucide-react";
 import SettingsTab from "./SettingsTab";
 import TemplatesTab from "./TemplatesTab";
 import CampaignsTab from "./CampaignsTab";
+import UsersRolesTab from "./UsersRolesTab";
 
 const TABS = [
   { id: "settings", label: "Platform Settings", Icon: Settings2 },
   { id: "templates", label: "Email Templates", Icon: FileText },
   { id: "campaigns", label: "Campaigns", Icon: Megaphone },
+  { id: "users_roles", label: "Users & Roles", Icon: Users2 },
 ];
 
 export default function PlatformSettings() {
@@ -39,6 +41,7 @@ export default function PlatformSettings() {
       {tab === "settings" && <SettingsTab />}
       {tab === "templates" && <TemplatesTab />}
       {tab === "campaigns" && <CampaignsTab />}
+      {tab === "users_roles" && <UsersRolesTab />}
     </div>
   );
 }

@@ -10,6 +10,7 @@ from .outreach import (
     get_outreach_leads,
     add_outreach_lead,
     reset_outreach,
+    mark_all_leads_as_sent,
     update_lead_status,
     update_lead_notes,
     update_collaboration_stage,
@@ -28,7 +29,21 @@ from .outreach import (
     process_reply,
     process_outreach_reply,
     check_imap_replies_sync,
+    fetch_inbox_emails,
     dispatch_campaign,
+    get_unreplied_leads,
+    delete_outreach_lead,
+    funnel_lead_to_nurture,
+)
+from .inquiries import (
+    get_inquiry_dashboard,
+    get_inquiries,
+    get_inquiry_detail,
+    send_inquiry_reply,
+    schedule_inquiry_meeting,
+    update_inquiry_stage,
+    mark_inquiry_read,
+    get_activity_feed,
 )
 from .google_meet import (
     schedule_meeting,
@@ -104,6 +119,19 @@ from .directory import (
 )
 from .incubators import update_incubator_contact, find_matching_incubators
 from .ai import get_ai_models, chat_assistant
+from .evaluator import (
+    classify_startup_stage,
+    evaluate_rules,
+    evaluate_advanced_heuristics,
+    ALL_STAGES,
+    STAGE_COLORS,
+    STAGE_IDEATION,
+    STAGE_PROTOTYPE,
+    STAGE_MVP,
+    STAGE_REVENUE,
+    STAGE_GROWTH,
+    STAGE_SEED,
+)
 
 __all__ = [
     "get_smtp_config",
@@ -115,6 +143,7 @@ __all__ = [
     "get_outreach_leads",
     "add_outreach_lead",
     "reset_outreach",
+    "mark_all_leads_as_sent",
     "update_lead_status",
     "update_lead_notes",
     "update_collaboration_stage",
@@ -133,6 +162,7 @@ __all__ = [
     "process_reply",
     "process_outreach_reply",
     "check_imap_replies_sync",
+    "fetch_inbox_emails",
     "dispatch_campaign",
     "get_settings",
     "get_setting",
@@ -199,4 +229,15 @@ __all__ = [
     "find_matching_incubators",
     "get_ai_models",
     "chat_assistant",
+    "classify_startup_stage",
+    "evaluate_rules",
+    "evaluate_advanced_heuristics",
+    "ALL_STAGES",
+    "STAGE_COLORS",
+    "STAGE_IDEATION",
+    "STAGE_PROTOTYPE",
+    "STAGE_MVP",
+    "STAGE_REVENUE",
+    "STAGE_GROWTH",
+    "STAGE_SEED",
 ]

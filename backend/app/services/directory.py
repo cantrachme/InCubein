@@ -2,14 +2,22 @@ import json
 import math
 import io
 import uuid
+from collections import Counter
 from datetime import datetime
 from typing import Optional
 
 from ..core.database import get_db_connection, get_mongo_db
 from ..core.exceptions import ServiceError
 from .graph import generate_web_graph
-from .outreach import seed_outreach_leads
-from .evaluator import extract_dynamic_rows_and_headers
+from .evaluator import extract_dynamic_rows_and_headers, classify_startup_stage
+
+
+def _clean(value) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        return str(value)
+    return value.strip()
 
 
 def get_region(state: str) -> str:
@@ -112,6 +120,7 @@ def get_startups(
     funding_stage: Optional[str] = None,
     hq_city: Optional[str] = None,
     incubator_id: Optional[str] = None,
+    stage_category: Optional[str] = None,
     page: Optional[int] = None,
     limit: Optional[int] = None
 ):
@@ -150,6 +159,10 @@ def get_startups(
                 row["founders"] = []
 
     conn.close()
+
+    # Filter by stage_category in-memory (since SQLite column may not exist for old data)
+    if stage_category:
+        rows = [r for r in rows if (r.get("stage_category") or "") == stage_category]
 
     if page is not None and limit is not None and limit > 0:
         total = len(rows)
@@ -308,6 +321,15 @@ def import_directory_excel(contents: bytes, entity_type: str = "startup"):
                     "source_url": "Excel Upload",
                     "last_updated": created_at,
                 }
+                record["stage_category"] = classify_startup_stage({
+                    "stage": record["funding_stage"],
+                    "revenue": 0,
+                    "team_size": 1,
+                    "website": record["website"],
+                    "dpiit": False,
+                    "pitch_deck_url": "",
+                    "business_summary": record["description"],
+                })
             else:
                 name = col_val("name")
                 if not name:
@@ -365,38 +387,52 @@ def get_graph():
 
 
 def get_analytics():
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    db = get_mongo_db()
+
+    incubators = list(db["incubators"].find({}))
+    startups = list(db["startups"].find({}, {
+        "sector": 1, "funding_stage": 1, "stage_category": 1,
+        "hq_city": 1, "incubator_id": 1, "confidence_score": 1,
+    }))
+    leads = list(db["outreach_leads"].find({}, {
+        "id": 1, "incubator_name": 1, "incubator_id": 1,
+        "email": 1, "contact_count": 1, "status": 1,
+    }))
+
+    def _c(items, key):
+        c = Counter()
+        for it in items:
+            v = it.get(key)
+            if not isinstance(v, str):
+                v = "" if v is None else str(v)
+            v = v.strip()
+            if v:
+                c[v] += 1
+        return c
 
     # --- Incubator Totals & Distributions ---
-    cursor.execute("SELECT COUNT(*) FROM incubators")
-    total_incubators = cursor.fetchone()[0]
+    total_incubators = len(incubators)
+    states_covered = len({_clean(i.get("state")) for i in incubators} - {""})
+    cities_covered = len({_clean(i.get("city")) for i in incubators} - {""})
 
-    cursor.execute("SELECT COUNT(DISTINCT state) FROM incubators WHERE state IS NOT NULL AND state != ''")
-    states_covered = cursor.fetchone()[0]
+    org_type_counter = _c(incubators, "organization_type")
+    org_type_distribution = [{"organization_type": k, "count": v} for k, v in org_type_counter.most_common()]
 
-    cursor.execute("SELECT COUNT(DISTINCT city) FROM incubators WHERE city IS NOT NULL AND city != ''")
-    cities_covered = cursor.fetchone()[0]
+    state_counter = _c(incubators, "state")
+    state_distribution = [{"state": k, "count": v} for k, v in state_counter.most_common()]
 
-    # Organization type distribution (Academic, Private, Government, PPP)
-    cursor.execute("SELECT organization_type, COUNT(*) as count FROM incubators WHERE organization_type IS NOT NULL AND organization_type != '' GROUP BY organization_type ORDER BY count DESC")
-    org_type_distribution = [dict(row) for row in cursor.fetchall()]
-
-    # State-wise distribution
-    cursor.execute("SELECT state, COUNT(*) as count FROM incubators WHERE state IS NOT NULL AND state != '' GROUP BY state ORDER BY count DESC")
-    state_distribution = [dict(row) for row in cursor.fetchall()]
-
-    # City-wise distribution (Top hubs)
-    cursor.execute("SELECT city, COUNT(*) as count FROM incubators WHERE city IS NOT NULL AND city != '' GROUP BY city ORDER BY count DESC LIMIT 8")
-    top_hubs = [dict(row) for row in cursor.fetchall()]
+    city_counter = _c(incubators, "city")
+    top_hubs = [{"city": k, "count": v} for k, v in city_counter.most_common(8)]
 
     # Top Ranked Incubators Leaderboard
-    cursor.execute("SELECT name, city, state, startup_count, focus_areas FROM incubators WHERE name IS NOT NULL ORDER BY startup_count DESC LIMIT 8")
-    top_incubators_raw = [dict(row) for row in cursor.fetchall()]
+    top_incubators_raw = sorted(
+        [i for i in incubators if i.get("name")],
+        key=lambda x: x.get("startup_count") or 0, reverse=True
+    )[:8]
     top_incubators = []
     for inc in top_incubators_raw:
         fa = inc.get("focus_areas")
-        if fa and isinstance(fa, str):
+        if isinstance(fa, str):
             try:
                 fa = json.loads(fa)
             except:
@@ -410,125 +446,96 @@ def get_analytics():
         })
 
     # Sector distribution from focus areas of incubators
-    sector_counts = {}
-    cursor.execute("SELECT focus_areas FROM incubators")
-    for row in cursor.fetchall():
-        if row[0]:
+    sector_counts = Counter()
+    for i in incubators:
+        fa = i.get("focus_areas")
+        if isinstance(fa, str):
             try:
-                areas = json.loads(row[0]) if isinstance(row[0], str) else row[0]
-                if isinstance(areas, list):
-                    for area in areas:
-                        if area:
-                            sector_counts[area] = sector_counts.get(area, 0) + 1
+                fa = json.loads(fa)
             except:
-                pass
+                fa = []
+        if isinstance(fa, list):
+            for area in fa:
+                if area and isinstance(area, str) and area.strip():
+                    sector_counts[area.strip()] += 1
 
     sector_distribution = [
         {"sector": k, "count": v}
-        for k, v in sector_counts.items()
+        for k, v in sector_counts.most_common()
     ]
-    sector_distribution.sort(key=lambda x: x["count"], reverse=True)
     sectors_supported = len(sector_distribution)
 
     # Region-wise distribution calculation
-    cursor.execute("SELECT state FROM incubators")
-    region_counts = {}
-    for r in cursor.fetchall():
-        st = r[0]
-        reg = get_region(st)
-        region_counts[reg] = region_counts.get(reg, 0) + 1
+    region_counts = Counter()
+    for i in incubators:
+        region_counts[get_region(i.get("state"))] += 1
 
     region_distribution = [
         {"region": k, "count": v}
-        for k, v in region_counts.items()
+        for k, v in region_counts.most_common()
     ]
-    region_distribution.sort(key=lambda x: x["count"], reverse=True)
 
     # --- Startup Totals & Detailed Analysis ---
-    cursor.execute("SELECT COUNT(*) FROM startups")
-    total_startups = cursor.fetchone()[0]
+    total_startups = len(startups)
 
-    # Startup Sector Distribution
-    cursor.execute("SELECT sector, COUNT(*) as count FROM startups WHERE sector IS NOT NULL AND sector != '' GROUP BY sector ORDER BY count DESC")
-    startup_sector_distribution = [dict(row) for row in cursor.fetchall()]
-
-    # Startup Funding Stage Distribution
-    cursor.execute("SELECT funding_stage, COUNT(*) as count FROM startups WHERE funding_stage IS NOT NULL AND funding_stage != '' GROUP BY funding_stage ORDER BY count DESC")
-    startup_stage_distribution = [dict(row) for row in cursor.fetchall()]
-
-    # Startup HQ City Distribution
-    cursor.execute("SELECT hq_city, COUNT(*) as count FROM startups WHERE hq_city IS NOT NULL AND hq_city != '' GROUP BY hq_city ORDER BY count DESC LIMIT 8")
-    startup_city_distribution = [dict(row) for row in cursor.fetchall()]
+    startup_sector_distribution = [{"sector": k, "count": v} for k, v in _c(startups, "sector").most_common()]
+    startup_stage_distribution = [{"funding_stage": k, "count": v} for k, v in _c(startups, "funding_stage").most_common()]
+    startup_category_distribution = [{"stage_category": k, "count": v} for k, v in _c(startups, "stage_category").most_common()]
+    startup_city_distribution = [{"hq_city": k, "count": v} for k, v in _c(startups, "hq_city").most_common(8)]
 
     # Incubated vs Standalone Startups
-    cursor.execute("SELECT COUNT(*) FROM startups WHERE incubator_id IS NOT NULL AND incubator_id != ''")
-    incubated_startups_count = cursor.fetchone()[0]
+    incubated_startups_count = sum(1 for s in startups if _clean(s.get("incubator_id")))
 
     # Average Confidence Score for Evaluated Startups
-    cursor.execute("SELECT confidence_score FROM startups WHERE confidence_score IS NOT NULL")
     scores = []
-    for r in cursor.fetchall():
+    for s in startups:
         try:
-            val = float(r[0])
-            scores.append(val)
+            if s.get("confidence_score") is not None:
+                scores.append(float(s["confidence_score"]))
         except:
             pass
     avg_confidence = round(sum(scores) / len(scores), 1) if scores else 0.0
 
     # Unique filters for dropdowns
-    cursor.execute("SELECT DISTINCT state FROM incubators WHERE state IS NOT NULL AND state != '' ORDER BY state")
-    unique_states = [r[0] for r in cursor.fetchall()]
-
-    cursor.execute("SELECT DISTINCT city FROM incubators WHERE city IS NOT NULL AND city != '' ORDER BY city")
-    unique_cities = [r[0] for r in cursor.fetchall()]
-
-    cursor.execute("SELECT focus_areas FROM incubators")
-    all_areas = set()
-    for row in cursor.fetchall():
-        if row[0]:
-            try:
-                areas = json.loads(row[0]) if isinstance(row[0], str) else row[0]
-                if isinstance(areas, list):
-                    all_areas.update(areas)
-            except:
-                pass
-    unique_focus_areas = sorted(list(all_areas))
+    unique_states = sorted(state_counter.keys())
+    unique_cities = sorted(city_counter.keys())
+    unique_focus_areas = sorted(sector_counts.keys())
 
     # Collaboration Lifecycle & Progress Pipeline
-    seed_outreach_leads()
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    statuses = [(_clean(l.get("status"))) for l in leads]
 
-    cursor.execute("SELECT COUNT(*) FROM outreach_leads WHERE status = 'Sent' OR status = 'Follow-up Sent' OR contact_count > 0")
-    total_outreach_sent = cursor.fetchone()[0]
+    total_outreach_sent = sum(1 for l in leads
+        if l.get("status") in ("Sent", "Follow-up Sent") or (l.get("contact_count") or 0) > 0)
 
-    cursor.execute("SELECT SUM(coalesce(contact_count, 0)) FROM outreach_leads")
-    total_contacts_dispatched = cursor.fetchone()[0] or 0
+    total_contacts_dispatched = sum(l.get("contact_count") or 0 for l in leads)
 
-    cursor.execute("SELECT COUNT(*) FROM outreach_leads WHERE status IN ('Replied', 'In Loop', 'Interviewed')")
-    replied_count = cursor.fetchone()[0]
+    replied_count = sum(1 for s in statuses if s in ("Replied", "In Loop", "Interviewed"))
 
-    cursor.execute("SELECT COUNT(*) FROM scheduled_meetings WHERE status != 'Cancelled'")
-    sm_count = cursor.fetchone()[0] or 0
-    cursor.execute("SELECT COUNT(*) FROM outreach_leads WHERE status = 'Meeting Scheduled'")
-    ol_count = cursor.fetchone()[0] or 0
+    sm_count = db["scheduled_meetings"].count_documents({"status": {"$ne": "Cancelled"}}) or 0
+    ol_count = statuses.count("Meeting Scheduled")
     meeting_scheduled_count = max(sm_count, ol_count)
 
-    cursor.execute("SELECT COUNT(*) FROM outreach_leads WHERE status = 'MOUs'")
-    mou_signed_count = cursor.fetchone()[0]
+    mou_signed_count = statuses.count("MOUs")
+    active_incubation_count = statuses.count("Incubated")
+    tbi_partnerships_count = statuses.count("TBI Partnership")
 
-    cursor.execute("SELECT COUNT(*) FROM outreach_leads WHERE status = 'Incubated'")
-    active_incubation_count = cursor.fetchone()[0]
-
-    cursor.execute("SELECT COUNT(*) FROM outreach_leads WHERE status = 'TBI Partnership'")
-    tbi_partnerships_count = cursor.fetchone()[0]
-
-    cursor.execute("SELECT * FROM outreach_leads")
-    collaboration_leads_raw = [dict(row) for row in cursor.fetchall()]
+    collaboration_leads_raw = []
+    for l in leads:
+        cnt = l.get("contact_count")
+        try:
+            cnt = int(cnt) if cnt is not None else 0
+        except:
+            cnt = 0
+        collaboration_leads_raw.append({
+            "id": l.get("id"),
+            "incubator_name": l.get("incubator_name"),
+            "incubator_id": l.get("incubator_id"),
+            "email": l.get("email"),
+            "contact_count": cnt,
+            "status": _clean(l.get("status"))
+        })
     status_order = {"Incubated": 1, "TBI Partnership": 2, "MOUs": 3, "Meeting Scheduled": 4, "Replied": 5, "Sent": 6, "Follow-up Sent": 7, "Draft": 8}
     collaboration_leads_raw.sort(key=lambda x: status_order.get(x.get("status"), 99))
-
-    conn.close()
 
     return {
         "totals": {
@@ -550,6 +557,7 @@ def get_analytics():
             "total_startups": total_startups,
             "sector_distribution": startup_sector_distribution,
             "stage_distribution": startup_stage_distribution,
+            "stage_category_distribution": startup_category_distribution,
             "city_distribution": startup_city_distribution,
             "incubated_count": incubated_startups_count,
             "avg_confidence": avg_confidence

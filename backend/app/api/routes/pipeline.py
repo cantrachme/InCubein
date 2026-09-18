@@ -53,10 +53,11 @@ def api_get_startups(
     funding_stage: str | None = None,
     hq_city: str | None = None,
     incubator_id: str | None = None,
+    stage_category: str | None = None,
     page: int | None = None,
     limit: int | None = None,
 ):
-    return get_startups(q, sector, funding_stage, hq_city, incubator_id, page, limit)
+    return get_startups(q, sector, funding_stage, hq_city, incubator_id, stage_category, page, limit)
 
 
 @router.post("/api/directory/upload")

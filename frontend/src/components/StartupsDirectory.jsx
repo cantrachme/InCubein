@@ -3,6 +3,15 @@ import { createPortal } from "react-dom";
 import { toast } from "react-toastify";
 import { Search, MapPin, Globe, Mail, Send, X, ExternalLink, ShieldCheck, User, Trash2, Upload } from "lucide-react";
 
+const STAGE_COLORS = {
+  "Ideation":       { bg: "#EEF2FF", text: "#4338CA", border: "#C7D2FE" },
+  "Prototype":      { bg: "#F0FDF4", text: "#166534", border: "#BBF7D0" },
+  "MVP/Pre-Revenue": { bg: "#FFF7ED", text: "#9A3412", border: "#FED7AA" },
+  "Revenue":        { bg: "#FEF2F2", text: "#991B1B", border: "#FECACA" },
+  "Growth/Scaling": { bg: "#FDF4FF", text: "#86198F", border: "#F0ABFC" },
+  "Seed Stage":     { bg: "#ECFDF5", text: "#065F46", border: "#A7F3D0" },
+};
+
 export default function StartupsDirectory() {
   const [startups, setStartups] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -10,6 +19,7 @@ export default function StartupsDirectory() {
   const [selectedCity, setSelectedCity] = useState("");
   const [selectedSector, setSelectedSector] = useState("");
   const [selectedStage, setSelectedStage] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(12);
   
@@ -73,6 +83,7 @@ export default function StartupsDirectory() {
       if (selectedSector) url += `&sector=${encodeURIComponent(selectedSector)}`;
       if (selectedStage) url += `&funding_stage=${encodeURIComponent(selectedStage)}`;
       if (selectedCity) url += `&hq_city=${encodeURIComponent(selectedCity)}`;
+      if (selectedCategory) url += `&stage_category=${encodeURIComponent(selectedCategory)}`;
 
       const res = await fetch(url);
       if (res.ok) {
@@ -94,7 +105,7 @@ export default function StartupsDirectory() {
       fetchStartups();
     }, 300);
     return () => clearTimeout(timer);
-  }, [searchQuery, selectedSector, selectedStage, selectedCity]);
+  }, [searchQuery, selectedSector, selectedStage, selectedCity, selectedCategory]);
 
   const handleAddToCampaign = async (startup) => {
     if (!startup.founders && !startup.startup_name) {
@@ -130,6 +141,7 @@ export default function StartupsDirectory() {
   const sectors = ["All", ...new Set(startups.map(s => s.sector).filter(Boolean))];
   const stages = ["All", ...new Set(startups.map(s => s.funding_stage).filter(Boolean))];
   const cities = ["All", ...new Set(startups.map(s => s.hq_city).filter(Boolean))];
+  const categories = ["All", "Ideation", "Prototype", "MVP/Pre-Revenue", "Revenue", "Growth/Scaling", "Seed Stage"];
 
   const totalItems = startups.length;
   const isAll = pageSize === "All";
@@ -247,6 +259,18 @@ export default function StartupsDirectory() {
             {cities.map(ct => <option key={ct} value={ct}>{ct}</option>)}
           </select>
         </div>
+
+        {/* Stage Category Filter */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+          <span style={{ fontSize: "0.7rem", fontWeight: 700, color: "var(--text-dim)", textTransform: "uppercase" }}>Startup Type</span>
+          <select
+            value={selectedCategory}
+            onChange={(e) => setSelectedCategory(e.target.value === "All" ? "" : e.target.value)}
+            style={{ height: "36px", fontSize: "0.82rem", padding: "0 8px", borderRadius: "8px", border: "1px solid var(--border-color)", background: "white" }}
+          >
+            {categories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+          </select>
+        </div>
       </div>
 
       {loading ? (
@@ -306,11 +330,24 @@ export default function StartupsDirectory() {
                       }}
                       className="card-hover"
                     >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "4px" }}>
                         <span className="badge badge-primary" style={{ fontSize: "0.68rem" }}>
                           {st.sector}
                         </span>
-                        {st.funding_stage && (
+                        {st.stage_category && STAGE_COLORS[st.stage_category] && (
+                          <span style={{
+                            fontSize: "0.65rem",
+                            fontWeight: 700,
+                            padding: "2px 8px",
+                            borderRadius: "10px",
+                            background: STAGE_COLORS[st.stage_category].bg,
+                            color: STAGE_COLORS[st.stage_category].text,
+                            border: `1px solid ${STAGE_COLORS[st.stage_category].border}`,
+                          }}>
+                            {st.stage_category}
+                          </span>
+                        )}
+                        {st.funding_stage && !st.stage_category && (
                           <span className="badge badge-secondary" style={{ fontSize: "0.68rem" }}>
                             {st.funding_stage}
                           </span>
@@ -481,7 +518,22 @@ export default function StartupsDirectory() {
             {/* Tags */}
             <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
               <span className="badge badge-primary">{activeDrawerStartup.sector}</span>
-              <span className="badge" style={{ background: "var(--bg-dark)" }}>{activeDrawerStartup.funding_stage}</span>
+              {activeDrawerStartup.stage_category && STAGE_COLORS[activeDrawerStartup.stage_category] && (
+                <span style={{
+                  fontSize: "0.72rem",
+                  fontWeight: 700,
+                  padding: "4px 10px",
+                  borderRadius: "6px",
+                  background: STAGE_COLORS[activeDrawerStartup.stage_category].bg,
+                  color: STAGE_COLORS[activeDrawerStartup.stage_category].text,
+                  border: `1px solid ${STAGE_COLORS[activeDrawerStartup.stage_category].border}`,
+                }}>
+                  {activeDrawerStartup.stage_category}
+                </span>
+              )}
+              {!activeDrawerStartup.stage_category && (
+                <span className="badge" style={{ background: "var(--bg-dark)" }}>{activeDrawerStartup.funding_stage}</span>
+              )}
               {activeDrawerStartup.status && (
                 <span style={{ fontSize: "0.72rem", background: "var(--primary-light)", padding: "4px 8px", borderRadius: "4px", color: "var(--primary)", fontWeight: 700, display: "flex", alignItems: "center", gap: "4px" }}>
                   <ShieldCheck size={12} /> {activeDrawerStartup.status}

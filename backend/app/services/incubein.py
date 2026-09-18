@@ -27,7 +27,9 @@ from .evaluator import (
     evaluate_dynamic_features,
     evaluate_rules,
     evaluate_advanced_heuristics,
-    compute_similarity_matrix
+    compute_similarity_matrix,
+    classify_startup_stage,
+    _COHORT_PRIORITY_THRESHOLDS,
 )
 
 
@@ -95,13 +97,17 @@ def process_cohort_excel(contents: bytes, entity_type: str):
                 "raw_data": raw_data
             }
 
-            # Rule Engine Evaluation
-            rule_score, rule_breakdown = evaluate_rules(startup_data)
+            # Auto-classify startup stage
+            stage_category = classify_startup_stage(startup_data)
+            startup_data["stage_category"] = stage_category
+
+            # Rule Engine Evaluation (stage-specific)
+            rule_score, rule_breakdown = evaluate_rules(startup_data, stage_category)
             startup_data["rule_score"] = rule_score
             startup_data["rule_breakdown"] = rule_breakdown
 
-            # Advanced Heuristics
-            eval_result = evaluate_advanced_heuristics(startup_data)
+            # Advanced Heuristics (stage-aware)
+            eval_result = evaluate_advanced_heuristics(startup_data, stage_category)
 
             # Dynamic Features Evaluation for random columns
             dynamic_score, feature_scores, dyn_strengths, dyn_weaknesses = evaluate_dynamic_features(raw_data, headers)
@@ -132,9 +138,11 @@ def process_cohort_excel(contents: bytes, entity_type: str):
                 "recommendation": eval_result["recommendation"]
             }
 
-            if final_score_val >= 70:
+            # Stage-specific priority thresholds
+            high_thresh, med_thresh = _COHORT_PRIORITY_THRESHOLDS.get(stage_category, (70, 40))
+            if final_score_val >= high_thresh:
                 priority_val = "High"
-            elif final_score_val >= 40:
+            elif final_score_val >= med_thresh:
                 priority_val = "Medium"
             else:
                 priority_val = "Low"
@@ -298,6 +306,7 @@ def add_cohort_to_database(req: AddCohortToEcosystemRequest):
                 "founders": founder_name,
                 "website": doc["website"],
                 "funding_stage": doc["stage"],
+                "stage_category": doc.get("stage_category", ""),
                 "hq_city": doc["city_state"].split(",")[0].strip() if doc["city_state"] else "Unknown",
                 "incubated_at": _dt.datetime.now().strftime("%Y-%m-%d"),
                 "incubator_id": "incubein_cohort",

@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from ..core import config
-from ..core.database import get_db_connection
+from ..core.database import get_db_connection, get_mongo_db
 from ..core.exceptions import NotFoundError, BadRequestError
 from ..schemas.outreach import (
     AddLeadRequest,
@@ -52,9 +52,25 @@ def seed_outreach_leads():
             intent_classification TEXT,
             meeting_link TEXT,
             meeting_scheduled_at TEXT,
-            notes TEXT
+            notes TEXT,
+            is_read INTEGER DEFAULT 0,
+            followup_count INTEGER DEFAULT 0
         )
     ''')
+    conn.commit()
+    # Migration: add columns if missing (existing DBs)
+    for col_def in [
+        "ALTER TABLE outreach_leads ADD COLUMN is_read INTEGER DEFAULT 0",
+        "ALTER TABLE outreach_leads ADD COLUMN followup_count INTEGER DEFAULT 0",
+        "ALTER TABLE outreach_leads ADD COLUMN reply_sentiment TEXT",
+        "ALTER TABLE outreach_leads ADD COLUMN reply_urgency TEXT",
+        "ALTER TABLE outreach_leads ADD COLUMN reply_reason TEXT",
+        "ALTER TABLE outreach_leads ADD COLUMN last_followup_at TEXT",
+    ]:
+        try:
+            cursor.execute(col_def)
+        except Exception:
+            pass
     conn.commit()
     conn.close()
 
@@ -67,6 +83,74 @@ def get_outreach_leads():
     rows = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return rows
+
+
+def _unreplied_filter():
+    return {
+        "status": {"$in": ["Sent", "Follow-up Sent"]},
+        "reply_text": {"$in": [None, ""]},
+        "reply_detected_at": {"$in": [None, ""]},
+    }
+
+
+def _fetch_unreplied_leads(startup: bool):
+    """Leads that were contacted but never replied to or engaged.
+
+    ``startup=True`` scopes to the Startup Cohort (incubein_cohort),
+    otherwise to the Incubator Network."""
+    db = get_mongo_db()
+    query = _unreplied_filter()
+    if startup:
+        query["incubator_id"] = "incubein_cohort"
+    else:
+        query["incubator_id"] = {"$ne": "incubein_cohort"}
+    return [dict(doc) for doc in db["outreach_leads"].find(query).sort("sent_at", -1)]
+
+
+def get_unreplied_leads():
+    db = get_mongo_db()
+    rows = [dict(doc) for doc in db["outreach_leads"].find(_unreplied_filter()).sort("sent_at", -1)]
+    for row in rows:
+        row["_id"] = str(row.get("_id", ""))
+    return rows
+
+
+def delete_outreach_lead(lead_id):
+    """Permanently removes a lead and its scheduled meetings (targeted-list removal)."""
+    db = get_mongo_db()
+    lead = db["outreach_leads"].find_one({"id": lead_id})
+    if not lead:
+        raise NotFoundError("Lead not found")
+    db["outreach_leads"].delete_many({"id": lead_id})
+    db["scheduled_meetings"].delete_many({"lead_id": lead_id})
+    return {
+        "status": "success",
+        "message": f"Removed {lead.get('incubator_name', lead_id)} from targeted outreach.",
+    }
+
+
+def funnel_lead_to_nurture(lead_id):
+    """Moves a non-responsive lead into the 90-day nurturing sequence."""
+    db = get_mongo_db()
+    lead = db["outreach_leads"].find_one({"id": lead_id})
+    if not lead:
+        raise NotFoundError("Lead not found")
+    today = datetime.now().strftime("%Y-%m-%d")
+    prev_notes = lead.get("notes") or ""
+    note = f"Funneled into 90-day nurturing sequence on {today}."
+    db["outreach_leads"].update_one(
+        {"id": lead_id},
+        {"$set": {
+            "status": "In Loop",
+            "nurture_start_date": today,
+            "nurture_cycle_days": 90,
+            "notes": f"{prev_notes}\n{note}" if prev_notes else note,
+        }},
+    )
+    return {
+        "status": "success",
+        "message": f"{lead.get('incubator_name', lead_id)} moved into the nurturing sequence.",
+    }
 
 
 def add_outreach_lead(req: AddLeadRequest):
@@ -104,6 +188,21 @@ def reset_outreach():
     conn.close()
     seed_outreach_leads()
     return {"status": "success", "message": "Campaign data successfully reset."}
+
+
+def mark_all_leads_as_sent():
+    """Bulk update all Draft leads to Sent status."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    now = datetime.now().isoformat()
+    cursor.execute(
+        "UPDATE outreach_leads SET status = 'Sent', sent_at = ? WHERE status = 'Draft'",
+        (now,)
+    )
+    updated = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return {"status": "success", "message": f"Marked {updated} lead(s) as Sent.", "updated_count": updated}
 
 
 def update_lead_status(req: UpdateLeadStatusRequest):
@@ -455,12 +554,18 @@ def trigger_mass_send(req: MassSendRequest):
     cursor = conn.cursor()
 
     # Select all Draft leads of the target type
-    if req.target_type == "startups":
+    if req.target_type == "unreplied_startups":
+        leads = _fetch_unreplied_leads(startup=True)
+    elif req.target_type == "unreplied_incubators":
+        leads = _fetch_unreplied_leads(startup=False)
+    elif req.target_type == "startups":
         cursor.execute("SELECT * FROM outreach_leads WHERE status = 'Draft' AND incubator_id = 'incubein_cohort'")
+        leads = [dict(row) for row in cursor.fetchall()]
     else:
         cursor.execute("SELECT * FROM outreach_leads WHERE status = 'Draft' AND incubator_id != 'incubein_cohort'")
+        leads = [dict(row) for row in cursor.fetchall()]
 
-    leads = [dict(row) for row in cursor.fetchall()]
+    leads = [dict(row) for row in leads]
 
     if not leads:
         conn.close()
@@ -474,7 +579,7 @@ def trigger_mass_send(req: MassSendRequest):
     batch_size = int(settings.get("scrape_batch_size", 8))
     batch_delay = int(settings.get("scrape_batch_delay_seconds", 15))
 
-    entity_kind = "startup" if req.target_type == "startups" else "incubator"
+    entity_kind = "startup" if req.target_type in ("startups", "unreplied_startups") else "incubator"
     tpl = _pick_template(entity_kind, getattr(req, "template_id", None) or "")
 
     cc = (req.cc or "").strip()
@@ -595,6 +700,12 @@ def dispatch_campaign(campaign_id: str):
         cursor.execute("SELECT * FROM outreach_leads WHERE status = 'Draft' AND incubator_id != 'incubein_cohort'")
         leads = [dict(row) for row in cursor.fetchall()]
         conn.close()
+        entity_kind = "incubator"
+    elif target_type == "unreplied_startups":
+        leads = _fetch_unreplied_leads(startup=True)
+        entity_kind = "startup"
+    elif target_type == "unreplied_incubators":
+        leads = _fetch_unreplied_leads(startup=False)
         entity_kind = "incubator"
     elif target_type.startswith("lead:"):
         lead_id = target_type.split(":", 1)[1]
@@ -1092,16 +1203,39 @@ def extract_email_address(from_header):
     return from_header.strip().strip('"').strip("'").lower()
 
 
-def check_imap_replies_sync():
-    imap_host = os.environ.get("IMAP_HOST")
-    imap_port = os.environ.get("IMAP_PORT", "993")
-    imap_user = os.environ.get("IMAP_USER")
-    imap_pass = os.environ.get("IMAP_PASS")
+def get_imap_config(account: str = "default"):
+    """Resolve IMAP credentials for the given mail account suffix."""
+    if account and account.strip() not in ("", "default"):
+        suffix = account.strip()
+        host = os.environ.get(f"IMAP_HOST{suffix}")
+        port = os.environ.get(f"IMAP_PORT{suffix}", "993")
+        user = os.environ.get(f"IMAP_USER{suffix}")
+        pwd = os.environ.get(f"IMAP_PASS{suffix}")
+    else:
+        host = os.environ.get("IMAP_HOST")
+        port = os.environ.get("IMAP_PORT", "993")
+        user = os.environ.get("IMAP_USER")
+        pwd = os.environ.get("IMAP_PASS")
 
-    if imap_user:
-        imap_user = imap_user.strip().strip('"').strip("'")
-    if imap_pass:
-        imap_pass = imap_pass.strip().strip('"').strip("'")
+    if user:
+        user = user.strip().strip('"').strip("'")
+    if pwd:
+        pwd = pwd.strip().strip('"').strip("'")
+
+    return {
+        "host": host,
+        "port": int(port) if port else 993,
+        "user": user,
+        "password": pwd,
+    }
+
+
+def check_imap_replies_sync(mail_account: str = "default"):
+    imap_cfg = get_imap_config(mail_account)
+    imap_host = imap_cfg["host"]
+    imap_port = imap_cfg["port"]
+    imap_user = imap_cfg["user"]
+    imap_pass = imap_cfg["password"]
 
     if not (imap_host and imap_user and imap_pass) or "your_email" in imap_user:
         print("IMAP parameters not configured or using placeholders. Skipping IMAP scan.")
@@ -1127,8 +1261,8 @@ def check_imap_replies_sync():
             print("Inbox is empty.")
             return []
 
-        # Inspect the last 40 messages to find replies
-        mail_ids = mail_ids[-40:]
+        # Inspect the last 200 messages to find replies
+        mail_ids = mail_ids[-200:]
         print(f"IMAP connection successful. Scanning the last {len(mail_ids)} messages in Inbox...")
 
         conn = get_db_connection()
@@ -1141,10 +1275,6 @@ def check_imap_replies_sync():
         print("Active leads waiting for replies (Sent/Follow-up status):", list(leads.keys()))
 
         for m_id in reversed(mail_ids):  # Scan from newest to oldest
-            if len(leads) == 0:
-                print("All pending outreach replies have been detected and processed. Stopping search early.")
-                break
-
             try:
                 status, msg_data = mail.fetch(m_id, "(RFC822)")
                 if status != "OK":
@@ -1160,23 +1290,6 @@ def check_imap_replies_sync():
 
                 if from_email in leads:
                     lead = leads[from_email]
-
-                    # Check if email is received after outreach email sent time
-                    msg_date_str = msg.get("Date")
-                    if msg_date_str:
-                        try:
-                            import email.utils
-                            msg_date = email.utils.parsedate_to_datetime(msg_date_str)
-                            msg_date_local = msg_date.astimezone().replace(tzinfo=None)
-
-                            sent_at_str = lead["sent_at"]
-                            if sent_at_str:
-                                sent_at_dt = datetime.fromisoformat(sent_at_str)
-                                if msg_date_local < sent_at_dt:
-                                    print(f"Skipping email from {from_email} as it was received at {msg_date_local} (before outreach email sent at {sent_at_dt})")
-                                    continue
-                        except Exception as date_err:
-                            print(f"Error parsing date for message from {from_email}: {date_err}")
 
                     print(f"Match found for Sent lead: {lead['incubator_name']} ({from_email})!")
 
@@ -1196,6 +1309,14 @@ def check_imap_replies_sync():
                     res = process_reply(lead["id"], body)
                     if res:
                         print(f"Successfully processed reply from {from_email}. New status: {res['lead_status']}")
+                        # Mark the lead as read in the DB
+                        try:
+                            update_cursor = conn.cursor()
+                            update_cursor.execute("UPDATE outreach_leads SET is_read = 1 WHERE id = ?", (lead["id"],))
+                            conn.commit()
+                        except Exception as mark_err:
+                            print(f"Error marking lead as read: {mark_err}")
+
                         processed_replies.append({
                             "incubator_name": lead["incubator_name"],
                             "email": from_email,
@@ -1222,6 +1343,122 @@ def check_imap_replies_sync():
     return processed_replies
 
 
+def fetch_inbox_emails(limit: int = 100, mail_account: str = "default"):
+    """Fetch all emails from the IMAP inbox for display in the dashboard.
+    Returns a list of dicts with from, to, subject, date, body_preview, is_unread, message_id."""
+    imap_cfg = get_imap_config(mail_account)
+    imap_host = imap_cfg["host"]
+    imap_port = imap_cfg["port"]
+    imap_user = imap_cfg["user"]
+    imap_pass = imap_cfg["password"]
+
+    if not (imap_host and imap_user and imap_pass) or "your_email" in imap_user:
+        return []
+
+    emails = []
+    try:
+        mail = imaplib.IMAP4_SSL(imap_host, int(imap_port))
+        mail.login(imap_user, imap_pass)
+        mail.select("inbox")
+
+        status, response = mail.search(None, "ALL")
+        if status != "OK":
+            mail.logout()
+            return []
+
+        mail_ids = response[0].split()
+        if not mail_ids:
+            mail.logout()
+            return []
+
+        # Fetch the latest N messages
+        mail_ids = mail_ids[-limit:]
+
+        for m_id in reversed(mail_ids):
+            try:
+                status, msg_data = mail.fetch(m_id, "(RFC822)")
+                if status != "OK":
+                    continue
+
+                raw_email = msg_data[0][1]
+                msg = email.message_from_bytes(raw_email)
+
+                from_header = msg.get("From", "")
+                to_header = msg.get("To", "")
+                subject_header = msg.get("Subject", "")
+                date_header = msg.get("Date", "")
+                message_id_header = msg.get("Message-ID", "")
+
+                # Decode subject
+                try:
+                    decoded_subject = decode_header(subject_header)
+                    subject_parts = []
+                    for part, enc in decoded_subject:
+                        if isinstance(part, bytes):
+                            subject_parts.append(part.decode(enc or "utf-8", errors="ignore"))
+                        else:
+                            subject_parts.append(part)
+                    subject = "".join(subject_parts)
+                except Exception:
+                    subject = subject_header
+
+                # Check if message is unread (no \Seen flag)
+                is_unread = True
+                try:
+                    status_flags, flags_data = mail.fetch(m_id, "(FLAGS)")
+                    if status_flags == "OK":
+                        flags_str = flags_data[0].decode() if flags_data[0] else ""
+                        if "\\Seen" in flags_str:
+                            is_unread = False
+                except Exception:
+                    pass
+
+                # Extract body preview (first 500 chars of plain text)
+                body_preview = ""
+                if msg.is_multipart():
+                    for part in msg.walk():
+                        content_type = part.get_content_type()
+                        content_disposition = str(part.get("Content-Disposition"))
+                        if content_type == "text/plain" and "attachment" not in content_disposition:
+                            payload = part.get_payload(decode=True)
+                            if payload:
+                                body_preview = payload.decode(part.get_content_charset() or "utf-8", errors="ignore")[:500]
+                            break
+                else:
+                    payload = msg.get_payload(decode=True)
+                    if payload:
+                        body_preview = payload.decode(msg.get_content_charset() or "utf-8", errors="ignore")[:500]
+
+                # Parse date
+                parsed_date = date_header
+                try:
+                    msg_date = email.utils.parsedate_to_datetime(date_header)
+                    parsed_date = msg_date.strftime("%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    pass
+
+                emails.append({
+                    "from": extract_email_address(from_header),
+                    "from_name": from_header,
+                    "to": to_header,
+                    "subject": subject,
+                    "date": parsed_date,
+                    "body_preview": body_preview,
+                    "is_unread": is_unread,
+                    "message_id": message_id_header,
+                    "mail_id": m_id.decode() if isinstance(m_id, bytes) else str(m_id),
+                })
+            except Exception as e:
+                print(f"Error fetching inbox message {m_id}: {e}")
+
+        mail.close()
+        mail.logout()
+    except Exception as e:
+        print("fetch_inbox_emails error:", e)
+
+    return emails
+
+
 def get_outreach_config():
     settings = get_settings()
     return {
@@ -1244,10 +1481,10 @@ def update_outreach_config(cfg: OutreachConfig):
     return get_outreach_config()
 
 
-def trigger_check_replies():
+def trigger_check_replies(mail_account: str = "default"):
     if get_setting("scanning_paused", True):
         return {"status": "paused", "checked_at": datetime.now().isoformat(), "new_replies": [], "message": "Inbox scanning is permanently paused. Resume scanning in the Outreach Automation controls to proceed."}
-    replies = check_imap_replies_sync()
+    replies = check_imap_replies_sync(mail_account)
     return {"status": "success", "checked_at": datetime.now().isoformat(), "new_replies": replies}
 
 

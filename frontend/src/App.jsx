@@ -5,14 +5,17 @@ import {
   Sparkles,
   RocketIcon,
   RefreshCcw,
-  AlertCircle,
   ChevronLeft,
   ChevronRight,
-  Wifi,
   WifiOff,
-  Bot,
-  Trash2,
   Settings2,
+  Flag,
+  ListChecks,
+  ShieldAlert,
+  CalendarCheck,
+  Inbox,
+  CalendarClock,
+  Globe,
 } from "lucide-react";
 
 import AnalyticsDashboard from "./components/AnalyticsDashboard";
@@ -22,27 +25,48 @@ import OutreachAutomation from "./components/OutreachAutomation";
 import CohortEvaluator from "./components/CohortEvaluator";
 import StartupsDirectory from "./components/StartupsDirectory";
 import EnrichmentHub from "./components/EnrichmentHub";
-import IncubationLoopTracker from "./components/IncubationLoopTracker";
+import ActionPlans from "./components/ActionPlans";
+import ActionTracker from "./components/ActionTracker";
+import MilestonesView from "./components/MilestonesView";
+import RisksView from "./components/RisksView";
 import PlatformSettings from "./components/PlatformSettings";
-import { ToastContainer, toast } from "react-toastify";
-import { Globe, RefreshCcw as LoopIcon } from "lucide-react";
+import InquirerDashboard from "./components/InquiryDashboards";
+import StartupDashboard from "./components/StartupDashboard";
+import TimelineDashboard from "./components/TimelineDashboard";
+import { ToastContainer } from "react-toastify";
 
 import "react-toastify/dist/ReactToastify.css";
 
 const NAV_ITEMS = [
   {
-    section: "Analytics",
+    section: "Main Dashboard",
     items: [
-      { id: "dashboard",  label: "Dashboard",           Icon: BarChart2,  subtitle: "Ecosystem metrics & insights" },
+      { id: "dashboard", label: "Incubator + Startup Analysis", Icon: BarChart2, subtitle: "Two separate views — incubation & startup never mixed" },
+    ],
+  },
+  {
+    section: "View",
+    items: [
+      { id: "inquirers",       label: "Inquirer Dashboard",     Icon: Inbox,        subtitle: "Incubation + Startup inquiries from the Outreach Hub" },
+      { id: "startups_view",   label: "Startup Dashboard",      Icon: RocketIcon,   subtitle: "Real startup intelligence, charts & filters" },
+      { id: "timeline",        label: "Timeline",               Icon: CalendarClock, subtitle: "Clickable activity feed across outreach & execution" },
+    ],
+  },
+  {
+    section: "Execution",
+    items: [
+      { id: "action_plans", label: "90-Day Action Plan",    Icon: CalendarCheck, subtitle: "Per-startup plans — select a startup, add or remove it" },
+      { id: "actions",      label: "90-Day Action Tracker", Icon: ListChecks,     subtitle: "Status, check/cross markers, auto-sync to Milestones & Risks" },
+      { id: "milestones",   label: "Milestones",            Icon: Flag,           subtitle: "Auto-view: consolidated timeline flagged in the tracker" },
+      { id: "risks",        label: "Risk Register",         Icon: ShieldAlert,    subtitle: "Auto-view: risk matrix updated from tracker logs & plan risks" },
     ],
   },
   {
     section: "Outreach & Nurturing",
     items: [
-      { id: "directory",  label: "Incubators Directory", Icon: Building2,  subtitle: "Discover & search TBIs" },
+      { id: "directory",  label: "Incubators Directory",     Icon: Building2,  subtitle: "Discover & search TBIs" },
       { id: "startups_directory", label: "Startups Directory", Icon: RocketIcon, subtitle: "Ecosystem startups list" },
-      { id: "outreach", label: "Outreach Hub", Icon: Sparkles, subtitle: "Campaigns & Onboarding" },
-      { id: "nurture_loop", label: "90-Day Incubation Loop", Icon: LoopIcon, subtitle: "Active 3-month nurturing" },
+      { id: "outreach",   label: "Outreach Hub",             Icon: Sparkles,    subtitle: "Campaigns, replies & onboarding" },
     ],
   },
   {
@@ -61,13 +85,19 @@ const NAV_ITEMS = [
 ];
 
 const PAGE_META = {
-  dashboard:          { title: "Ecosystem Insights & Analytics",        sub: "Aggregated metrics, state distributions, and technology verticals." },
+  dashboard:          { title: "Main Dashboard — Incubator & Startup Analysis", sub: "Two separate analyses; incubation and startup data are never mixed." },
+  inquirers:          { title: "Inquirer Dashboard",                  sub: "Incubation + Startup inquiries (Outreach Hub) with reply & meeting actions." },
+  startups_view:      { title: "Startup Dashboard",                   sub: "Real startup intelligence from the CRM — KPIs, charts, search & profiles." },
+  timeline:           { title: "Timeline",                            sub: "Clickable activity feed across outreach, meetings & execution." },
+  milestones:         { title: "Milestones",                           sub: "Automated view — consolidated timeline of milestones flagged in the Action Tracker." },
+  actions:            { title: "90-Day Action Tracker",                sub: "Assign, track and complete actions; check/cross markers auto-sync to Milestones & Risks." },
+  action_plans:       { title: "90-Day Action Plan",                  sub: "Per-startup plans — select a startup (or add one), define steps, milestones & risks." },
+  risks:              { title: "Risk Register",                        sub: "Automated view — risk matrix updated from tracker logs & initial plan risks." },
   directory:          { title: "Indian Incubators Directory",           sub: "Discover and search academic, government, and private TBIs." },
   outreach:           { title: "Outreach & Onboarding Hub",             sub: "Draft MOUs, run targeted campaigns, and track startup pipeline." },
   startups_directory: { title: "Ecosystem Startups Directory",        sub: "Filter, search, and manage cohort and ecosystem startups." },
   cohort_evaluator:   { title: "INCUBEIN Cohort Evaluator",             sub: "Secure evaluation, multi-criteria scoring, and incubator ranking." },
   enrichment_hub:     { title: "Web Scraping & Data Enrichment Hub",    sub: "DuckDuckGo web search integration to auto-discover missing addresses, emails, & focus areas." },
-  nurture_loop:       { title: "90-Day Incubation & Partnership Loop",  sub: "Maintain active engagement across the 3-month incubation cycle with multi-meeting milestones." },
   platform_settings:  { title: "Platform Settings",                    sub: "Manage email templates, outreach campaigns, and automation configuration." },
 };
 
@@ -186,11 +216,17 @@ export default function App() {
     );
   }
 
-  /* ─── Active View Router ────────────────────────────────────── */
+/* ─── Active View Router ────────────────────────────────────── */
   const renderActiveView = () => {
     switch (activeTab) {
       case "dashboard":
         return <AnalyticsDashboard analyticsData={analyticsData} loading={loading} />;
+      case "inquirers":
+        return <InquirerDashboard />;
+      case "startups_view":
+        return <StartupDashboard />;
+      case "timeline":
+        return <TimelineDashboard />;
       case "directory":
         return <DirectoryView filtersData={analyticsData ? analyticsData.filters : null} onDraftMou={handleDraftMouFromFinder} />;
       case "outreach":
@@ -201,11 +237,16 @@ export default function App() {
         return <CohortEvaluator />;
       case "enrichment_hub":
         return <EnrichmentHub />;
-      case "nurture_loop":
-        return <IncubationLoopTracker />;
       case "platform_settings":
         return <PlatformSettings />;
-
+      case "milestones":
+        return <MilestonesView />;
+      case "actions":
+        return <ActionTracker />;
+      case "action_plans":
+        return <ActionPlans />;
+      case "risks":
+        return <RisksView />;
       default:
         return <AnalyticsDashboard analyticsData={analyticsData} loading={loading} />;
     }

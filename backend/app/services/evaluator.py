@@ -2,10 +2,441 @@ import os
 import re
 import json
 import base64
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Optional, Tuple
 import openpyxl
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
+
+
+# ─── Startup Stage Constants ────────────────────────────────────────
+STAGE_IDEATION = "Ideation"
+STAGE_PROTOTYPE = "Prototype"
+STAGE_MVP = "MVP/Pre-Revenue"
+STAGE_REVENUE = "Revenue"
+STAGE_GROWTH = "Growth/Scaling"
+STAGE_SEED = "Seed Stage"
+
+ALL_STAGES = [STAGE_IDEATION, STAGE_PROTOTYPE, STAGE_MVP, STAGE_REVENUE, STAGE_GROWTH, STAGE_SEED]
+
+STAGE_COLORS = {
+    STAGE_IDEATION:    {"bg": "#EEF2FF", "text": "#4338CA", "border": "#C7D2FE"},
+    STAGE_PROTOTYPE:   {"bg": "#F0FDF4", "text": "#166534", "border": "#BBF7D0"},
+    STAGE_MVP:         {"bg": "#FFF7ED", "text": "#9A3412", "border": "#FED7AA"},
+    STAGE_REVENUE:     {"bg": "#FEF2F2", "text": "#991B1B", "border": "#FECACA"},
+    STAGE_GROWTH:      {"bg": "#FDF4FF", "text": "#86198F", "border": "#F0ABFC"},
+    STAGE_SEED:        {"bg": "#ECFDF5", "text": "#065F46", "border": "#A7F3D0"},
+}
+
+# ─── Stage Auto-Classification ──────────────────────────────────────
+
+def _normalize_stage_hint(raw: str) -> Optional[str]:
+    if not raw:
+        return None
+    s = raw.strip().lower()
+    if not s or s in ["none", "na", "n/a", "nil", "active", "other"]:
+        return None
+    mapping = {
+        STAGE_IDEATION:    ["idea", "ideation", "concept", "conceptual", "brainstorm", "pre-idea"],
+        STAGE_PROTOTYPE:   ["prototype", "poc", "proof of concept", "proof-of-concept", "alpha"],
+        STAGE_MVP:         ["mvp", "pre-revenue", "pre revenue", "beta", "early product", "product built"],
+        STAGE_REVENUE:     ["revenue", "revenue generating", "early revenue", "monetizing", "earning"],
+        STAGE_GROWTH:      ["growth", "scaling", "scale-up", "scale up", "expansion", "expanding"],
+        STAGE_SEED:        ["seed", "seed stage", "seed round", "pre-series a", "fundraise", "fundraising"],
+    }
+    for canonical, keywords in mapping.items():
+        for kw in keywords:
+            if kw in s:
+                return canonical
+    return None
+
+
+def classify_startup_stage(data: Dict[str, Any]) -> str:
+    raw_stage = str(data.get("stage") or "").strip()
+    hint = _normalize_stage_hint(raw_stage)
+    if hint:
+        return hint
+
+    revenue = float(data.get("revenue") or 0.0)
+    team_size = int(data.get("team_size") or 1)
+    has_website = bool(str(data.get("website") or "").strip() and str(data.get("website")).strip().startswith("http"))
+    has_dpiit = bool(data.get("dpiit", False))
+    has_pitch = bool(str(data.get("pitch_deck_url") or "").strip() and len(str(data.get("pitch_deck_url")).strip()) > 5)
+    summary = str(data.get("business_summary") or "").lower()
+    summary_words = len(summary.split()) if summary else 0
+
+    score_signals = 0
+
+    if revenue >= 5000000:
+        score_signals += 6
+    elif revenue >= 2000000:
+        score_signals += 5
+    elif revenue >= 500000:
+        score_signals += 4
+    elif revenue > 0:
+        score_signals += 3
+
+    if team_size >= 10:
+        score_signals += 4
+    elif team_size >= 5:
+        score_signals += 3
+    elif team_size >= 2:
+        score_signals += 2
+
+    if has_website:
+        score_signals += 2
+    if has_dpiit:
+        score_signals += 2
+    if has_pitch:
+        score_signals += 1
+
+    if summary_words > 40:
+        score_signals += 2
+    elif summary_words > 15:
+        score_signals += 1
+
+    if score_signals <= 2:
+        return STAGE_IDEATION
+    elif score_signals <= 5:
+        return STAGE_PROTOTYPE
+    elif score_signals <= 8:
+        return STAGE_MVP
+    elif score_signals <= 11:
+        return STAGE_REVENUE
+    elif score_signals <= 14:
+        return STAGE_GROWTH
+    else:
+        return STAGE_SEED
+
+
+# ─── Stage-Specific Scoring Engines (each max 40 raw → normalized 0-100) ──
+
+def _score_ideation(startup: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
+    scores = {}
+    summary = str(startup.get("business_summary") or "").lower()
+    sector = str(startup.get("sector") or "").lower()
+    competitors = str(startup.get("competitors") or "").lower()
+
+    word_count = len(summary.split())
+    if word_count > 40:
+        scores["idea_quality"] = 10
+    elif word_count > 20:
+        scores["idea_quality"] = 7
+    elif word_count > 5:
+        scores["idea_quality"] = 4
+    else:
+        scores["idea_quality"] = 1
+
+    problem_keywords = ["problem", "solve", "challenge", "issue", "gap", "need", "pain"]
+    hits = sum(1 for kw in problem_keywords if kw in summary)
+    scores["problem_clarity"] = min(8, 2 + hits * 2)
+
+    high_market = ["health", "agri", "climate", "ai", "fintech", "edtech", "saas"]
+    if any(m in sector for m in high_market):
+        scores["market_potential"] = 8
+    elif sector and len(sector) > 2:
+        scores["market_potential"] = 5
+    else:
+        scores["market_potential"] = 2
+
+    size = int(startup.get("team_size") or 1)
+    if size >= 3:
+        scores["team"] = 6
+    elif size == 2:
+        scores["team"] = 4
+    else:
+        scores["team"] = 2
+
+    if competitors and len(competitors) > 5 and "none" not in competitors:
+        scores["competitor_awareness"] = 4
+    else:
+        scores["competitor_awareness"] = 1
+
+    extras = 0
+    if str(startup.get("website") or "").strip():
+        extras += 1
+    if startup.get("dpiit"):
+        extras += 2
+    if str(startup.get("pitch_deck_url") or "").strip():
+        extras += 1
+    scores["extras"] = extras
+
+    total = sum(scores.values())
+    normalized = (total / 40.0) * 100.0
+    return round(normalized, 1), scores
+
+
+def _score_prototype(startup: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
+    scores = {}
+    summary = str(startup.get("business_summary") or "").lower()
+
+    website = str(startup.get("website") or "").strip()
+    if website and website.startswith("http"):
+        scores["product_presence"] = 8
+    elif website:
+        scores["product_presence"] = 5
+    else:
+        scores["product_presence"] = 1
+
+    size = int(startup.get("team_size") or 1)
+    if size >= 3:
+        scores["team"] = 6
+    elif size == 2:
+        scores["team"] = 4
+    else:
+        scores["team"] = 2
+
+    tech_keywords = ["built", "developed", "prototype", "working", "demo", "architecture", "technology", "platform"]
+    hits = sum(1 for kw in tech_keywords if kw in summary)
+    word_count = len(summary.split())
+    if hits >= 2 and word_count > 20:
+        scores["technical_detail"] = 8
+    elif hits >= 1 or word_count > 15:
+        scores["technical_detail"] = 5
+    else:
+        scores["technical_detail"] = 2
+
+    scores["dpiit"] = 4 if startup.get("dpiit") else 0
+
+    sector = str(startup.get("sector") or "").lower()
+    deep_tech = ["ai", "ml", "iot", "blockchain", "robotics", "biotech", "deeptech", "hardware"]
+    if any(t in sector for t in deep_tech):
+        scores["sector"] = 6
+    elif sector and len(sector) > 2:
+        scores["sector"] = 4
+    else:
+        scores["sector"] = 2
+
+    pitch = str(startup.get("pitch_deck_url") or "").strip()
+    scores["pitch_deck"] = 4 if pitch and len(pitch) > 5 else 0
+
+    rev = float(startup.get("revenue") or 0.0)
+    scores["early_revenue"] = 4 if rev > 0 else 2
+
+    total = sum(scores.values())
+    normalized = (total / 40.0) * 100.0
+    return round(normalized, 1), scores
+
+
+def _score_mvp(startup: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
+    scores = {}
+    summary = str(startup.get("business_summary") or "").lower()
+
+    website = str(startup.get("website") or "").strip()
+    if website and website.startswith("http"):
+        scores["website"] = 8
+    elif website:
+        scores["website"] = 5
+    else:
+        scores["website"] = 1
+
+    size = int(startup.get("team_size") or 1)
+    if size >= 4:
+        scores["team"] = 6
+    elif size >= 2:
+        scores["team"] = 4
+    else:
+        scores["team"] = 2
+
+    scores["dpiit"] = 5 if startup.get("dpiit") else 0
+
+    word_count = len(summary.split())
+    if word_count > 30:
+        scores["summary_depth"] = 6
+    elif word_count > 15:
+        scores["summary_depth"] = 4
+    else:
+        scores["summary_depth"] = 1
+
+    pitch = str(startup.get("pitch_deck_url") or "").strip()
+    scores["pitch_deck"] = 5 if pitch and len(pitch) > 5 else 0
+
+    sector = str(startup.get("sector") or "").lower()
+    scores["sector"] = 5 if sector and len(sector) > 2 else 2
+
+    rev = float(startup.get("revenue") or 0.0)
+    scores["revenue"] = 5 if rev > 0 else 3
+
+    total = sum(scores.values())
+    normalized = (total / 40.0) * 100.0
+    return round(normalized, 1), scores
+
+
+def _score_revenue(startup: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
+    scores = {}
+
+    rev = float(startup.get("revenue") or 0.0)
+    if rev >= 2000000:
+        scores["revenue"] = 12
+    elif rev >= 500000:
+        scores["revenue"] = 9
+    elif rev > 0:
+        scores["revenue"] = 6
+    else:
+        scores["revenue"] = 0
+
+    summary = str(startup.get("business_summary") or "").lower()
+    growth_kw = ["growing", "growth", "increasing", "month on month", "mrr", "arr", "recurring", "retention", "repeat"]
+    hits = sum(1 for kw in growth_kw if kw in summary)
+    scores["growth_signals"] = min(5, hits * 2)
+
+    size = int(startup.get("team_size") or 1)
+    if size >= 5:
+        scores["team"] = 5
+    elif size >= 3:
+        scores["team"] = 4
+    elif size >= 2:
+        scores["team"] = 3
+    else:
+        scores["team"] = 1
+
+    website = str(startup.get("website") or "").strip()
+    scores["website"] = 5 if website and website.startswith("http") else 0
+
+    scores["dpiit"] = 4 if startup.get("dpiit") else 0
+
+    pitch = str(startup.get("pitch_deck_url") or "").strip()
+    scores["pitch_deck"] = 4 if pitch and len(pitch) > 5 else 0
+
+    sector = str(startup.get("sector") or "").lower()
+    scores["sector"] = 5 if sector and len(sector) > 2 else 2
+
+    total = sum(scores.values())
+    normalized = (total / 40.0) * 100.0
+    return round(normalized, 1), scores
+
+
+def _score_growth(startup: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
+    scores = {}
+
+    rev = float(startup.get("revenue") or 0.0)
+    if rev >= 10000000:
+        scores["revenue_magnitude"] = 10
+    elif rev >= 5000000:
+        scores["revenue_magnitude"] = 8
+    elif rev >= 2000000:
+        scores["revenue_magnitude"] = 6
+    elif rev > 0:
+        scores["revenue_magnitude"] = 3
+    else:
+        scores["revenue_magnitude"] = 0
+
+    size = int(startup.get("team_size") or 1)
+    if size >= 15:
+        scores["team_scale"] = 8
+    elif size >= 10:
+        scores["team_scale"] = 7
+    elif size >= 5:
+        scores["team_scale"] = 5
+    elif size >= 3:
+        scores["team_scale"] = 3
+    else:
+        scores["team_scale"] = 1
+
+    website = str(startup.get("website") or "").strip()
+    scores["website"] = 5 if website and website.startswith("http") else 0
+
+    scores["dpiit"] = 4 if startup.get("dpiit") else 0
+
+    summary = str(startup.get("business_summary") or "").lower()
+    scale_kw = ["scale", "scaling", "expand", "expansion", "market", "revenue", "growth", "traction", "users", "customers", "retention"]
+    hits = sum(1 for kw in scale_kw if kw in summary)
+    scores["scaling_signals"] = min(5, 1 + hits)
+
+    sector = str(startup.get("sector") or "").lower()
+    scores["sector"] = 4 if sector and len(sector) > 2 else 1
+
+    pitch = str(startup.get("pitch_deck_url") or "").strip()
+    scores["pitch_deck"] = 4 if pitch and len(pitch) > 5 else 0
+
+    total = sum(scores.values())
+    normalized = (total / 40.0) * 100.0
+    return round(normalized, 1), scores
+
+
+def _score_seed(startup: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
+    scores = {}
+
+    rev = float(startup.get("revenue") or 0.0)
+    if rev >= 10000000:
+        scores["revenue"] = 8
+    elif rev >= 5000000:
+        scores["revenue"] = 7
+    elif rev >= 2000000:
+        scores["revenue"] = 5
+    elif rev > 0:
+        scores["revenue"] = 3
+    else:
+        scores["revenue"] = 0
+
+    pitch = str(startup.get("pitch_deck_url") or "").strip()
+    if pitch and len(pitch) > 10:
+        scores["pitch_deck"] = 8
+    elif pitch and len(pitch) > 5:
+        scores["pitch_deck"] = 5
+    else:
+        scores["pitch_deck"] = 0
+
+    website = str(startup.get("website") or "").strip()
+    scores["website"] = 5 if website and website.startswith("http") else 0
+
+    size = int(startup.get("team_size") or 1)
+    if size >= 10:
+        scores["team"] = 5
+    elif size >= 5:
+        scores["team"] = 4
+    elif size >= 3:
+        scores["team"] = 3
+    else:
+        scores["team"] = 1
+
+    scores["dpiit"] = 4 if startup.get("dpiit") else 0
+
+    summary = str(startup.get("business_summary") or "").lower()
+    invest_kw = ["investment", "raise", "funding", "seed", "series", "valuation", "investor", "capital", "financial", "projection"]
+    hits = sum(1 for kw in invest_kw if kw in summary)
+    scores["investment_readiness"] = min(5, hits)
+
+    sector = str(startup.get("sector") or "").lower()
+    high_value = ["ai", "saas", "fintech", "healthtech", "deeptech", "climate", "biotech"]
+    if any(s in sector for s in high_value):
+        scores["sector"] = 5
+    elif sector and len(sector) > 2:
+        scores["sector"] = 3
+    else:
+        scores["sector"] = 1
+
+    total = sum(scores.values())
+    normalized = (total / 40.0) * 100.0
+    return round(normalized, 1), scores
+
+
+_STAGE_SCORERS = {
+    STAGE_IDEATION:  _score_ideation,
+    STAGE_PROTOTYPE: _score_prototype,
+    STAGE_MVP:       _score_mvp,
+    STAGE_REVENUE:   _score_revenue,
+    STAGE_GROWTH:    _score_growth,
+    STAGE_SEED:      _score_seed,
+}
+
+_STAGE_PRIORITY_THRESHOLDS = {
+    STAGE_IDEATION:  (60, 35),
+    STAGE_PROTOTYPE: (55, 30),
+    STAGE_MVP:       (55, 30),
+    STAGE_REVENUE:   (50, 25),
+    STAGE_GROWTH:    (45, 20),
+    STAGE_SEED:      (45, 20),
+}
+
+_COHORT_PRIORITY_THRESHOLDS = {
+    STAGE_IDEATION:  (70, 40),
+    STAGE_PROTOTYPE: (65, 35),
+    STAGE_MVP:       (65, 35),
+    STAGE_REVENUE:   (60, 30),
+    STAGE_GROWTH:    (55, 25),
+    STAGE_SEED:      (55, 25),
+}
+
 
 load_dotenv()
 
@@ -326,70 +757,37 @@ def evaluate_dynamic_features(raw_data: Dict[str, str], headers: List[str]) -> T
 
     return round(avg_score, 1), feature_scores, strengths[:3], weaknesses[:3]
 
-def evaluate_rules(startup: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
-    scores = {}
-    
-    # 1. Revenue score (max 10)
-    rev = startup.get("revenue", 0.0)
-    if rev == 0:
-        scores["revenue"] = 0
-    elif rev <= 500000: # up to 5 Lakhs
-        scores["revenue"] = 5
-    elif rev <= 2000000: # up to 20 Lakhs
-        scores["revenue"] = 8
-    else:
-        scores["revenue"] = 10
-        
-    # 2. Stage score (max 10)
-    stage = str(startup.get("stage", "")).strip().lower()
-    if "mvp" in stage:
-        scores["stage"] = 8
-    elif "traction" in stage or "revenue" in stage or "growth" in stage or "scaling" in stage:
-        scores["stage"] = 10
-    elif "idea" in stage or "concept" in stage:
-        scores["stage"] = 4
-    elif "prototype" in stage:
-        scores["stage"] = 6
-    else:
-        scores["stage"] = 5
-        
-    # 3. DPIIT score (max 5)
-    dpiit = startup.get("dpiit", False)
-    scores["dpiit"] = 5 if dpiit else 0
-    
-    # 4. Team score (max 5)
-    size = startup.get("team_size", 1)
-    if size == 1:
-        scores["team_size"] = 2
-    elif 2 <= size <= 4:
-        scores["team_size"] = 4
-    else:
-        scores["team_size"] = 5
-        
-    # 5. Website score (max 5)
-    website = str(startup.get("website", "")).strip()
-    if website and (website.startswith("http") or "." in website):
-        scores["website"] = 5
-    else:
-        scores["website"] = 0
-        
-    # 6. Pitch deck score (max 5)
-    pitch = str(startup.get("pitch_deck_url", "")).strip()
-    if pitch and ("http" in pitch or len(pitch) > 5):
-        scores["pitch_deck"] = 5
-    else:
-        scores["pitch_deck"] = 0
-        
-    total_score = sum(scores.values()) # Max is 40
-    normalized_score = (total_score / 40.0) * 100.0
-    
-    return round(normalized_score, 1), scores
+def evaluate_rules(startup: Dict[str, Any], stage_category: Optional[str] = None) -> Tuple[float, Dict[str, Any]]:
+    if not stage_category:
+        stage_category = classify_startup_stage(startup)
 
-def evaluate_advanced_heuristics(startup: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Advanced Non-AI heuristic engine to evaluate a startup.
-    Returns the same schema as the LLM would.
-    """
+    scorer = _STAGE_SCORERS.get(stage_category)
+    if scorer:
+        normalized, scores = scorer(startup)
+    else:
+        # Fallback to legacy generic scoring
+        scores = {}
+        rev = startup.get("revenue", 0.0)
+        scores["revenue"] = 10 if rev > 2000000 else (8 if rev > 500000 else (5 if rev > 0 else 0))
+        scores["dpiit"] = 5 if startup.get("dpiit", False) else 0
+        size = startup.get("team_size", 1)
+        scores["team_size"] = 5 if size >= 5 else (4 if size >= 2 else 2)
+        website = str(startup.get("website", "")).strip()
+        scores["website"] = 5 if website and (website.startswith("http") or "." in website) else 0
+        pitch = str(startup.get("pitch_deck_url", "")).strip()
+        scores["pitch_deck"] = 5 if pitch and ("http" in pitch or len(pitch) > 5) else 0
+        scores["stage"] = 5
+        total_score = sum(scores.values())
+        normalized = (total_score / 40.0) * 100.0
+        normalized, scores = round(normalized, 1), scores
+
+    scores["stage_category"] = stage_category
+    return normalized, scores
+
+def evaluate_advanced_heuristics(startup: Dict[str, Any], stage_category: Optional[str] = None) -> Dict[str, Any]:
+    if not stage_category:
+        stage_category = classify_startup_stage(startup)
+
     summary = str(startup.get("business_summary") or "").lower()
     sector = str(startup.get("sector") or "").lower()
     competitors = str(startup.get("competitors") or "").lower()
@@ -499,7 +897,8 @@ def evaluate_advanced_heuristics(startup: Dict[str, Any]) -> Dict[str, Any]:
         "strengths": strengths[:3],
         "weaknesses": weaknesses[:3],
         "recommendation": recommendation,
-        "llm_score": float(total)
+        "llm_score": float(total),
+        "stage_category": stage_category,
     }
 
 def compute_similarity_matrix(startups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

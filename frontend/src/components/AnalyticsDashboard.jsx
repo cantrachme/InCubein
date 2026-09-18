@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from "react";
-import { createPortal } from "react-dom";
 import { toast } from "react-toastify";
 import {
   ShieldCheck,
@@ -11,12 +10,10 @@ import {
   Activity,
   Globe,
   Star,
-  Send,
   PieChart as PieIcon,
   BarChart2,
   Target,
-  X,
-  FileText
+  Bell
 } from "lucide-react";
 
 /* ── Skeleton Loaders ────────────────────────────────────────── */
@@ -476,6 +473,53 @@ function StartupStagesWidget({ data }) {
               </div>
               <div style={{ width: "100%", height: "8px", background: "var(--bg-surface)", borderRadius: "99px", overflow: "hidden" }}>
                 <div style={{ width: `${pct}%`, height: "100%", background: colors[idx % colors.length], borderRadius: "99px", transition: "width 1s ease" }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ── Startup Type (Stage Category) Distribution Card ──────── */
+const STAGE_CAT_COLORS = {
+  "Ideation":       { bar: "#4338CA", bg: "#EEF2FF" },
+  "Prototype":      { bar: "#166534", bg: "#F0FDF4" },
+  "MVP/Pre-Revenue": { bar: "#9A3412", bg: "#FFF7ED" },
+  "Revenue":        { bar: "#991B1B", bg: "#FEF2F2" },
+  "Growth/Scaling": { bar: "#86198F", bg: "#FDF4FF" },
+  "Seed Stage":     { bar: "#065F46", bg: "#ECFDF5" },
+};
+
+function StartupCategoryWidget({ data }) {
+  if (!data || data.length === 0) return null;
+  const total = data.reduce((sum, item) => sum + item.count, 0);
+
+  return (
+    <div className="glass-card chart-card">
+      <h3>
+        <PieIcon size={16} style={{ color: "#8B5CF6", marginRight: 4 }} />
+        Startup Type Distribution
+      </h3>
+      <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginTop: "12px" }}>
+        {data.map((item, idx) => {
+          const pct = total ? Math.round((item.count / total) * 100) : 0;
+          const cat = item.stage_category || "Unspecified";
+          const colors = STAGE_CAT_COLORS[cat] || { bar: "#6B7280", bg: "#F3F4F6" };
+          return (
+            <div key={idx} style={{ animation: `fadeSlideUp 0.35s var(--ease-out) ${idx * 0.05}s both` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78rem", fontWeight: 600, color: "var(--text-body)", marginBottom: "4px" }}>
+                <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: colors.bar, display: "inline-block" }} />
+                  {cat}
+                </span>
+                <span style={{ color: "var(--text-primary)", fontWeight: 700 }}>
+                  {item.count} <span style={{ fontSize: "0.7rem", color: "var(--text-dim)", fontWeight: 500 }}>({pct}%)</span>
+                </span>
+              </div>
+              <div style={{ width: "100%", height: "8px", background: "var(--bg-surface)", borderRadius: "99px", overflow: "hidden" }}>
+                <div style={{ width: `${pct}%`, height: "100%", background: `linear-gradient(90deg, ${colors.bar}, ${colors.bar}aa)`, borderRadius: "99px", transition: "width 1s ease" }} />
               </div>
             </div>
           );
@@ -956,30 +1000,26 @@ function CollaborationLifecycleWidget({ collaborationData, onSelectLead }) {
 
 /* ── Main Dashboard Component ────────────────────────────────── */
 export default function AnalyticsDashboard({ analyticsData, loading }) {
-  const [leads, setLeads] = useState([]);
-  const [fetchingLeads, setFetchingLeads] = useState(true);
-  const [viewMode, setViewMode] = useState("overview"); // "overview" | "incubators" | "startups" | "collaboration"
-  const [selectedTimelineLead, setSelectedTimelineLead] = useState(null);
+  const [viewMode, setViewMode] = useState("incubators"); // "incubators" | "startups" (Ecosystem Overview & Collaboration Pipeline moved out / on hold)
+  const [recentActivity, setRecentActivity] = useState(null);
 
-  const fetchLeads = async () => {
+  const fetchRecentActivity = async () => {
     try {
-      const res = await fetch("/api/outreach/leads");
+      const res = await fetch("/api/outreach/activity-feed?limit=1", { cache: "no-store" });
       if (res.ok) {
-        const data = await res.json();
-        setLeads(data || []);
+        const json = await res.json();
+        setRecentActivity((json && json.total) || (Array.isArray(json) ? json.length : null));
       }
     } catch (e) {
-      console.error("Error fetching leads for dashboard analytics:", e);
-    } finally {
-      setFetchingLeads(false);
+      console.error("Error fetching recent activity:", e);
     }
   };
 
   useEffect(() => {
-    fetchLeads();
+    fetchRecentActivity();
   }, []);
 
-  if (loading || fetchingLeads) {
+  if (loading) {
     return (
       <div>
         <SkeletonMetrics />
@@ -1033,12 +1073,8 @@ export default function AnalyticsDashboard({ analyticsData, loading }) {
   const maxStartupCityVal = startupCities.length > 0 ? startupCities[0].count : 1;
 
   const startupStages = startup_analytics?.stage_distribution || [];
+  const startupCategories = startup_analytics?.stage_category_distribution || [];
   const totalStartupsCount = totals.startups || (startup_analytics?.total_startups || 0);
-
-  // Compute live campaign conversion ratio metrics
-  const sentLeadsCount = leads.filter(l => l.status !== "Draft").length;
-  const repliedLeadsCount = leads.filter(l => ["Replied", "Meeting Scheduled", "Not Interested", "In Loop", "Interviewed", "Incubated"].includes(l.status)).length;
-  const conversionRatioVal = sentLeadsCount > 0 ? ((repliedLeadsCount / sentLeadsCount) * 100).toFixed(1) : "0.0";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
@@ -1057,125 +1093,53 @@ export default function AnalyticsDashboard({ analyticsData, loading }) {
       }}>
         <div style={{ display: "flex", gap: "8px" }}>
           <button
-            className={`btn ${viewMode === "overview" ? "btn-primary" : "btn-secondary"}`}
-            onClick={() => setViewMode("overview")}
-            style={{ fontSize: "0.82rem", padding: "6px 14px" }}
-          >
-            🌟 Ecosystem Overview
-          </button>
-          <button
             className={`btn ${viewMode === "incubators" ? "btn-primary" : "btn-secondary"}`}
             onClick={() => setViewMode("incubators")}
             style={{ fontSize: "0.82rem", padding: "6px 14px" }}
           >
-            🏢 Incubators Analysis
+            🏢 Incubator Analysis
           </button>
           <button
             className={`btn ${viewMode === "startups" ? "btn-primary" : "btn-secondary"}`}
             onClick={() => setViewMode("startups")}
             style={{ fontSize: "0.82rem", padding: "6px 14px" }}
           >
-            🚀 Startups Analysis
-          </button>
-          <button
-            className={`btn ${viewMode === "collaboration" ? "btn-primary" : "btn-secondary"}`}
-            onClick={() => setViewMode("collaboration")}
-            style={{ fontSize: "0.82rem", padding: "6px 14px" }}
-          >
-            🤝 Collaboration Pipeline
+            🚀 Startup Analysis
           </button>
         </div>
 
-        <div style={{ fontSize: "0.78rem", color: "var(--text-dim)", fontWeight: 600 }}>
-          {viewMode === "overview" && "Combined Insights & Outreach Funnel"}
-          {viewMode === "incubators" && `Deep-Dive into ${totals.incubators} Incubators`}
-          {viewMode === "startups" && `Deep-Dive into ${totalStartupsCount} Startups`}
-          {viewMode === "collaboration" && "Entity Lifecycle & Interaction Tracker"}
-        </div>
+        <button
+          className="btn btn-secondary"
+          onClick={fetchRecentActivity}
+          style={{ fontSize: "0.78rem", padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: 6 }}
+          title="Click for the detailed activity timeline in VIEW → Timeline. Detailed per-entity logs live there."
+        >
+          <Bell size={13} style={{ color: "var(--warning)" }} />
+          Recent Activity: {recentActivity === null ? "…" : recentActivity}
+          <span style={{ fontSize: "0.64rem", color: "var(--text-dim)" }}>(timeline →)</span>
+        </button>
       </div>
 
       {/* KPI Metrics Row */}
       <div className="metrics-grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
-        <MetricCard
-          title="Total Incubators"
-          value={totals.incubators}
-          Icon={ShieldCheck}
-          iconColor="var(--primary)"
-          footer="Active innovation hubs"
-        />
-        <MetricCard
-          title="Total Startups"
-          value={totalStartupsCount}
-          Icon={Target}
-          iconColor="#10B981"
-          footer="Tracked & cohort startups"
-        />
-        <MetricCard
-          title="States Covered"
-          value={totals.states}
-          Icon={MapPin}
-          iconColor="var(--info)"
-          footer="Unique Indian states"
-        />
-        <MetricCard
-          title="Cities Covered"
-          value={totals.cities}
-          Icon={Building2}
-          iconColor="var(--warning)"
-          footer="Active urban hubs"
-        />
-        <MetricCard
-          title="Sectors Supported"
-          value={totals.sectors}
-          Icon={Layers}
-          iconColor="var(--accent)"
-          footer="Technology verticals"
-        />
-        <MetricCard
-          title="Campaign Conv. Ratio"
-          value={`${conversionRatioVal}%`}
-          Icon={Send}
-          iconColor="#8B5CF6"
-          footer="Outreach response rate"
-        />
+        {viewMode === "incubators" ? (
+          <>
+            <MetricCard title="Total Incubators" value={totals.incubators} Icon={ShieldCheck} iconColor="var(--primary)" footer="Active innovation hubs" />
+            <MetricCard title="States Covered" value={totals.states} Icon={MapPin} iconColor="var(--info)" footer="Unique Indian states" />
+            <MetricCard title="Cities Covered" value={totals.cities} Icon={Building2} iconColor="var(--warning)" footer="Active urban hubs" />
+            <MetricCard title="Sectors Supported" value={totals.sectors} Icon={Layers} iconColor="var(--accent)" footer="Technology verticals" />
+          </>
+        ) : (
+          <>
+            <MetricCard title="Total Startups" value={totalStartupsCount} Icon={Target} iconColor="#10B981" footer="Tracked & cohort startups" />
+            <MetricCard title="Avg Evaluation Readiness" value={totals.avg_confidence_score || 0} Icon={Star} iconColor="#8B5CF6" footer="Readiness score / 100" />
+            <MetricCard title="Incubator Associated" value={totals.incubated_startups || 0} Icon={ShieldCheck} iconColor="#3B82F6" footer="Cohort startups" />
+          </>
+        )}
       </div>
 
-      {/* ─── ECOSYSTEM OVERVIEW VIEW ───────────────────────────── */}
-      {(viewMode === "overview" || viewMode === "incubators") && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "20px" }}>
-          
-          {/* SVG Donut Chart */}
-          <div className="glass-card chart-card">
-            <h3>
-              <PieIcon size={16} style={{ color: "var(--primary)", marginRight: 4 }} />
-              Incubator Region Share (Pie/Donut)
-            </h3>
-            <DonutChart data={region_distribution} />
-          </div>
-
-          {/* SVG Line Graph */}
-          <div className="glass-card chart-card">
-            <h3>
-              <TrendingUp size={16} style={{ color: "var(--accent)", marginRight: 4 }} />
-              Outreach Activity & Response Trends
-            </h3>
-            <LineChart leads={leads} />
-          </div>
-
-          {/* Conversion Funnel */}
-          <div className="glass-card chart-card">
-            <h3>
-              <BarChart2 size={16} style={{ color: "#F59E0B", marginRight: 4 }} />
-              Campaign Conversion Funnel & Ratios
-            </h3>
-            <FunnelWidget leads={leads} />
-          </div>
-
-        </div>
-      )}
-
-      {/* ─── INCUBATORS DEEP DIVE VIEW ─────────────────────────── */}
-      {(viewMode === "overview" || viewMode === "incubators") && (
+      {/* ─── INCUBATOR ANALYSIS VIEW ──────────────────────────── */}
+      {viewMode === "incubators" && (
         <div className="dashboard-grid">
           {/* Sector Distribution */}
           <div className="glass-card chart-card">
@@ -1242,7 +1206,7 @@ export default function AnalyticsDashboard({ analyticsData, loading }) {
       )}
 
       {/* ─── STARTUPS DEEP DIVE VIEW ───────────────────────────── */}
-      {(viewMode === "overview" || viewMode === "startups") && (
+      {viewMode === "startups" && (
         <div style={{ marginTop: viewMode === "startups" ? "0" : "10px" }}>
           
           <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px" }}>
@@ -1272,6 +1236,9 @@ export default function AnalyticsDashboard({ analyticsData, loading }) {
 
             {/* Startup Funding Stages */}
             <StartupStagesWidget data={startupStages} />
+
+            {/* Startup Type (Stage Category) Distribution */}
+            <StartupCategoryWidget data={startupCategories} />
 
             {/* Startup HQ Cities */}
             <div className="glass-card chart-card">
@@ -1316,25 +1283,7 @@ export default function AnalyticsDashboard({ analyticsData, loading }) {
         </div>
       )}
 
-      {/* ─── COLLABORATION LIFECYCLE TRACKER VIEW ──────────────── */}
-      {(viewMode === "overview" || viewMode === "collaboration") && (
-        <CollaborationLifecycleWidget
-          collaborationData={analyticsData.collaboration_progress}
-          onSelectLead={(lead) => setSelectedTimelineLead(lead)}
-        />
-      )}
-
-      {/* Interactive Timeline Modal */}
-      {selectedTimelineLead && (
-        <TimelineModal
-          lead={selectedTimelineLead}
-          onClose={() => setSelectedTimelineLead(null)}
-          onRefresh={() => {
-            fetchLeads();
-          }}
-        />
-      )}
-
+      {/* Detailed per-entity activity lives in VIEW → Timeline (interactive, clickable). */}
     </div>
   );
 }

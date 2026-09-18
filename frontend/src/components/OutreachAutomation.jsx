@@ -23,7 +23,8 @@ import {
   Building2,
   Rocket,
   PauseCircle,
-  PlayCircle
+  PlayCircle,
+  MessageCircleWarning
 } from "lucide-react";
 
 // Academic Collaboration Template
@@ -330,6 +331,9 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
   // 1: Send, 2: Reply, 3: AI intent, 4: Score, 5: Calendar
   const [activeWorkflowNode, setActiveWorkflowNode] = useState(0);
   const [activeSubTab, setActiveSubTab] = useState("campaigns");
+  const [inboxEmails, setInboxEmails] = useState([]);
+  const [inboxLoading, setInboxLoading] = useState(false);
+  const [inboxSearch, setInboxSearch] = useState("");
 
   // Ensure invalid tabs for startups are deselected automatically
   useEffect(() => {
@@ -504,6 +508,10 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
     }
     return true;
   });
+
+  const unrepliedLeads = filteredLeads.filter(l =>
+    ["Sent", "Follow-up Sent"].includes(l.status) && !l.reply_text && !l.reply_detected_at
+  );
 
   const filteredMeetings = meetings.filter(meeting => {
     if (targetType === "startups") {
@@ -1066,6 +1074,88 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
     }
   };
 
+  const handleMassFollowupUnreplied = async () => {
+    if (unrepliedLeads.length === 0) {
+      toast.warning("No unreplied leads in this segment.");
+      return;
+    }
+    const target = targetType === "startups" ? "unreplied_startups" : "unreplied_incubators";
+    if (!window.confirm(`Send follow-up to all ${unrepliedLeads.length} unreplied ${targetType === "startups" ? "startups" : "incubators"} (targeted non-responder outreach)?`)) return;
+
+    addLog("OUTREACH", `Initializing targeted outreach to ${unrepliedLeads.length} unreplied leads...`);
+    let payload = { target_type: target, mail_account: selectedMailAccount };
+
+    const template = getTemplateList(targetType).find(t => t.key === selectedTemplateKey);
+    if (template) {
+      payload.template_id = template.key;
+      if (template.cc) payload.cc = template.cc;
+      if (template.bcc) payload.bcc = template.bcc;
+    }
+
+    try {
+      const res = await fetch("/api/outreach/mass-send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok && data.status === "success") {
+        addLog("OUTREACH", `Mass follow-up complete. ${data.message}`);
+        toast.success(data.message);
+        await fetchData();
+      } else {
+        addLog("ERROR", `Mass follow-up failed: ${data.detail || "Server error"}`);
+        toast.error(`Mass follow-up failed: ${data.detail || "Server error"}`);
+      }
+    } catch (err) {
+      addLog("ERROR", "Connection to backend mass-send API failed.");
+      toast.error("Connection to backend mass-send API failed.");
+    }
+  };
+
+  const handleRemoveLead = async (lead) => {
+    if (!window.confirm(`Remove ${lead.incubator_name} from targeted outreach permanently? Any scheduled meeting for this lead will also be deleted.`)) return;
+    addLog("OUTREACH", `Removing ${lead.incubator_name} from targeted outreach...`);
+    try {
+      const res = await fetch(`/api/outreach/leads/${lead.id}`, { method: "DELETE" });
+      const data = await res.json();
+      if (res.ok) {
+        addLog("OUTREACH", data.message);
+        toast.success(data.message);
+        await fetchData();
+      } else {
+        addLog("ERROR", `Remove failed: ${data.detail || "Server error"}`);
+        toast.error(`Remove failed: ${data.detail || "Server error"}`);
+      }
+    } catch (err) {
+      addLog("ERROR", "Failed to connect to backend remove-lead API.");
+      toast.error("Failed to connect to backend remove-lead API.");
+    }
+  };
+
+  const handleFunnelToNurture = async (lead) => {
+    addLog("OUTREACH", `Moving ${lead.incubator_name} into the 90-day nurturing sequence...`);
+    try {
+      const res = await fetch("/api/outreach/leads/funnel-nurture", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lead_id: lead.id })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        addLog("OUTREACH", data.message);
+        toast.success(data.message);
+        await fetchData();
+      } else {
+        addLog("ERROR", `Funnel failed: ${data.detail || "Server error"}`);
+        toast.error(`Funnel failed: ${data.detail || "Server error"}`);
+      }
+    } catch (err) {
+      addLog("ERROR", "Failed to connect to backend funnel-nurture API.");
+      toast.error("Failed to connect to backend funnel-nurture API.");
+    }
+  };
+
   const handleSendFollowup = async (leadId, leadName, leadEmail) => {
     addLog("OUTREACH", `Triggering outreach partnership follow-up email to ${leadName} (${leadEmail})...`);
     
@@ -1119,10 +1209,10 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
 
   const handleCheckReplies = async () => {
     setCheckingReplies(true);
-    addLog("SYSTEM", "Connecting to IMAP inbox to scan for unread responses...");
+    addLog("SYSTEM", `Connecting to IMAP inbox (${selectedMailAccount}) to scan all emails (read + unread) for responses...`);
     
     try {
-      const res = await fetch("/api/outreach/check-replies", { method: "POST" });
+      const res = await fetch(`/api/outreach/check-replies?mail_account=${encodeURIComponent(selectedMailAccount)}`, { method: "POST" });
       const data = await res.json();
       
       if (res.ok) {
@@ -1139,7 +1229,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
             }
           });
         } else {
-          addLog("SYSTEM", "IMAP Scan complete. No new unread replies from campaign leads detected.");
+          addLog("SYSTEM", "IMAP Scan complete. No new replies from campaign leads detected in inbox.");
         }
         await fetchData();
       } else {
@@ -1149,6 +1239,47 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
       addLog("ERROR", "IMAP mailbox retrieval connection error.");
     } finally {
       setCheckingReplies(false);
+    }
+  };
+
+  const handleMarkAllSent = async () => {
+    const draftCount = filteredLeads.filter(l => l.status === "Draft").length;
+    if (draftCount === 0) return;
+    if (!window.confirm(`Mark all ${draftCount} draft lead(s) as Sent? This will set their status and enable IMAP reply scanning.`)) return;
+
+    try {
+      const res = await fetch("/api/outreach/mark-all-sent", { method: "POST" });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success(data.message || "All drafts marked as Sent");
+        addLog("SYSTEM", `Bulk status update: ${data.updated_count || draftCount} lead(s) marked as Sent.`);
+        await fetchData();
+      } else {
+        toast.error(data.detail || "Failed to update leads");
+      }
+    } catch (err) {
+      toast.error("Error marking leads as sent");
+    }
+  };
+
+  const fetchInboxEmails = async () => {
+    setInboxLoading(true);
+    addLog("SYSTEM", `Fetching inbox emails from IMAP server (${selectedMailAccount})...`);
+    try {
+      const res = await fetch(`/api/outreach/inbox?mail_account=${encodeURIComponent(selectedMailAccount)}`);
+      const data = await res.json();
+      if (res.ok) {
+        setInboxEmails(Array.isArray(data) ? data : []);
+        addLog("SYSTEM", `Inbox loaded: ${Array.isArray(data) ? data.length : 0} emails fetched from ${selectedMailAccount}.`);
+      } else {
+        addLog("ERROR", `Failed to fetch inbox: ${data.detail || "Server error"}`);
+        setInboxEmails([]);
+      }
+    } catch (err) {
+      addLog("ERROR", "Failed to connect to inbox API.");
+      setInboxEmails([]);
+    } finally {
+      setInboxLoading(false);
     }
   };
 
@@ -1446,6 +1577,22 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
           <Sparkles size={14} style={{ marginRight: "6px" }} />
           Outreach Campaigns
         </button>
+        <button 
+          className="btn" 
+          style={{ 
+            background: activeSubTab === "unreplied" ? "var(--primary-light)" : "transparent",
+            color: activeSubTab === "unreplied" ? "var(--primary)" : "var(--text-muted)",
+            borderColor: activeSubTab === "unreplied" ? "var(--primary)" : "transparent",
+            fontWeight: activeSubTab === "unreplied" ? "700" : "500",
+            padding: "8px 16px",
+            fontSize: "0.85rem",
+            border: "1px solid transparent"
+          }}
+          onClick={() => setActiveSubTab("unreplied")}
+        >
+          <MessageCircleWarning size={14} style={{ marginRight: "6px" }} />
+          Unreplied ({unrepliedLeads.length})
+        </button>
         {targetType === "incubators" && (
           <button 
             className="btn" 
@@ -1479,6 +1626,22 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
         >
           <Calendar size={14} style={{ marginRight: "6px" }} />
           Scheduled Meetings ({filteredMeetings.length})
+        </button>
+        <button 
+          className="btn" 
+          style={{ 
+            background: activeSubTab === "inbox" ? "var(--primary-light)" : "transparent",
+            color: activeSubTab === "inbox" ? "var(--primary)" : "var(--text-muted)",
+            borderColor: activeSubTab === "inbox" ? "var(--primary)" : "transparent",
+            fontWeight: activeSubTab === "inbox" ? "700" : "500",
+            padding: "8px 16px",
+            fontSize: "0.85rem",
+            border: "1px solid transparent"
+          }}
+          onClick={() => setActiveSubTab("inbox")}
+        >
+          <Mail size={14} style={{ marginRight: "6px" }} />
+          Inbox Conversations
         </button>
       </div>
 
@@ -1609,6 +1772,46 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                   >
                     <Send size={14} />
                     <span>Mass Send Drafts ({filteredLeads.filter(l => l.status === "Draft").length})</span>
+                  </button>
+                )}
+
+                {unrepliedLeads.length > 0 && (
+                  <button 
+                    className="btn btn-primary"
+                    style={{ 
+                      display: "inline-flex", 
+                      alignItems: "center", 
+                      gap: "0.35rem", 
+                      padding: "0.4rem 0.75rem", 
+                      fontSize: "0.8rem", 
+                      height: "32px", 
+                      background: "rgba(124, 58, 237, 0.9)", 
+                      border: "1px solid rgb(124, 58, 237)" 
+                    }}
+                    onClick={handleMassFollowupUnreplied}
+                  >
+                    <Send size={14} />
+                    <span>Targeted Follow-Up: Unreplied ({unrepliedLeads.length})</span>
+                  </button>
+                )}
+
+                {filteredLeads.filter(l => l.status === "Draft").length > 0 && (
+                  <button 
+                    className="btn btn-primary"
+                    style={{ 
+                      display: "inline-flex", 
+                      alignItems: "center", 
+                      gap: "0.35rem", 
+                      padding: "0.4rem 0.75rem", 
+                      fontSize: "0.8rem", 
+                      height: "32px", 
+                      background: "rgba(99, 102, 241, 0.9)", 
+                      border: "1px solid rgb(99, 102, 241)" 
+                    }}
+                    onClick={handleMarkAllSent}
+                  >
+                    <CheckCircle size={14} />
+                    <span>Mark All as Sent ({filteredLeads.filter(l => l.status === "Draft").length})</span>
                   </button>
                 )}
 
@@ -1792,6 +1995,21 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                                   Follow-ups: {lead.followup_count}
                                 </span>
                               )}
+                              {lead.status !== "Draft" && (
+                                <span style={{ 
+                                  fontSize: "0.65rem", 
+                                  fontWeight: "700",
+                                  background: lead.is_read ? "rgba(220, 252, 231, 0.7)" : "rgba(243, 244, 246, 0.7)", 
+                                  color: lead.is_read ? "#166534" : "#6b7280", 
+                                  padding: "1px 6px", 
+                                  borderRadius: "3px",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "3px"
+                                }}>
+                                  {lead.is_read ? "Read" : "Unread"}
+                                </span>
+                              )}
                             </div>
                           </td>
                           <td style={{ padding: "0.75rem 0.5rem" }}>
@@ -1828,6 +2046,7 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                               <option value="Replied">Replied</option>
                               <option value="Meeting Scheduled">Meeting Scheduled</option>
                               <option value="Not Interested">Not Interested</option>
+                              <option value="In Loop">In Loop</option>
                             </select>
                           </td>
                           <td style={{ padding: "0.75rem 0.5rem", textAlign: "center" }}>
@@ -1905,6 +2124,24 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
                                 Schedule Meet
                               </button>
                             )}
+                            {["Sent", "Follow-up Sent", "In Loop"].includes(lead.status) && !lead.reply_text && (
+                              <button
+                                className="btn btn-secondary"
+                                style={{ padding: "0.3rem 0.6rem", fontSize: "0.75rem", marginRight: "0.35rem", background: "#ede9fe", border: "1px solid #7c3aed", color: "#5b21b6", fontWeight: "600" }}
+                                onClick={(e) => { e.stopPropagation(); handleFunnelToNurture(lead); }}
+                                title="Move into 90-day nurturing sequence"
+                              >
+                                → Nurture
+                              </button>
+                            )}
+                            <button
+                              className="btn btn-secondary"
+                              style={{ padding: "0.3rem 0.6rem", fontSize: "0.75rem", color: "#991b1b", border: "1px solid #fecaca", background: "#fef2f2" }}
+                              onClick={(e) => { e.stopPropagation(); handleRemoveLead(lead); }}
+                              title="Remove from targeted outreach (permanently)"
+                            >
+                              Remove
+                            </button>
                             {["Sent", "Follow-up Sent", "Replied", "Meeting Scheduled", "Not Interested"].includes(lead.status) && (
                               <button 
                                 className="btn btn-secondary" 
@@ -1999,6 +2236,93 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
             </div>
 
           </div>
+        </div>
+      )}
+
+      {activeSubTab === "unreplied" && (
+        <div className="glass-card animate-in" style={{ padding: "1.5rem" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "1rem", marginBottom: "1rem" }}>
+            <div>
+              <h3 style={{ margin: 0, fontSize: "1.1rem", fontWeight: "700" }}>
+                ⏳ Unreplied {targetType === "startups" ? "Startups" : "Incubators"} ({unrepliedLeads.length})
+              </h3>
+              <p style={{ margin: "0.35rem 0 0 0", fontSize: "0.8rem", color: "var(--text-dim)" }}>
+                Contacts who have been emailed (Sent / Follow-up Sent) but have not replied. Funnel them into the 90-day nurturing sequence, remove them, or send a targeted follow-up only to non-responders.
+              </p>
+            </div>
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+              <button
+                className="btn btn-primary"
+                style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem", padding: "0.4rem 0.75rem", fontSize: "0.8rem", height: "32px", background: "rgba(124, 58, 237, 0.9)", border: "1px solid rgb(124, 58, 237)" }}
+                onClick={handleMassFollowupUnreplied}
+              >
+                <Send size={14} />
+                <span>Targeted Follow-Up (Non-Responders)</span>
+              </button>
+            </div>
+          </div>
+
+          {unrepliedLeads.length === 0 ? (
+            <div style={{ padding: "2rem", textAlign: "center", color: "var(--text-dim)", fontSize: "0.85rem", background: "var(--bg-dark)", borderRadius: "8px" }}>
+              No unreplied contacts in this segment — everyone has replied or is being nurtured.
+            </div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem" }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid var(--border-color)" }}>
+                    <th style={{ textAlign: "left", padding: "0.6rem 0.5rem", color: "var(--text-dim)" }}>Entity</th>
+                    <th style={{ textAlign: "left", padding: "0.6rem 0.5rem", color: "var(--text-dim)" }}>Status</th>
+                    <th style={{ textAlign: "left", padding: "0.6rem 0.5rem", color: "var(--text-dim)" }}>Sent At</th>
+                    <th style={{ textAlign: "left", padding: "0.6rem 0.5rem", color: "var(--text-dim)" }}>Follow-ups</th>
+                    <th style={{ textAlign: "right", padding: "0.6rem 0.5rem", color: "var(--text-dim)" }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {unrepliedLeads.map((lead) => (
+                    <tr key={lead.id} style={{ borderBottom: "1px solid var(--border-color)", verticalAlign: "middle" }}>
+                      <td style={{ padding: "0.75rem 0.5rem" }}>
+                        <div style={{ fontWeight: "600", color: "#000000" }}>{lead.incubator_name}</div>
+                        <div style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>{lead.email}</div>
+                      </td>
+                      <td style={{ padding: "0.75rem 0.5rem" }}>
+                        <span style={{ fontSize: "0.7rem", fontWeight: "700", padding: "2px 8px", borderRadius: "4px", background: lead.status === "Follow-up Sent" ? "#e0f2fe" : "#ecfeff", color: lead.status === "Follow-up Sent" ? "#0369a1" : "#155e75" }}>
+                          {lead.status}
+                        </span>
+                      </td>
+                      <td style={{ padding: "0.75rem 0.5rem", color: "var(--text-dim)", fontSize: "0.75rem" }}>
+                        {lead.sent_at ? new Date(lead.sent_at).toLocaleString() : "—"}
+                      </td>
+                      <td style={{ padding: "0.75rem 0.5rem" }}>{lead.followup_count || 0}</td>
+                      <td style={{ padding: "0.75rem 0.5rem", textAlign: "right" }}>
+                        <button
+                          className="btn btn-primary"
+                          style={{ padding: "0.3rem 0.6rem", fontSize: "0.75rem", marginRight: "0.35rem", background: "#e0f2fe", border: "1px solid #0284c7", color: "#0369a1", fontWeight: "600" }}
+                          onClick={(e) => { e.stopPropagation(); handleSendFollowup(lead.id, lead.incubator_name, lead.email); }}
+                        >
+                          Follow Up
+                        </button>
+                        <button
+                          className="btn btn-secondary"
+                          style={{ padding: "0.3rem 0.6rem", fontSize: "0.75rem", marginRight: "0.35rem", background: "#ede9fe", border: "1px solid #7c3aed", color: "#5b21b6", fontWeight: "600" }}
+                          onClick={(e) => { e.stopPropagation(); handleFunnelToNurture(lead); }}
+                        >
+                          → Nurture
+                        </button>
+                        <button
+                          className="btn btn-secondary"
+                          style={{ padding: "0.3rem 0.6rem", fontSize: "0.75rem", color: "#991b1b", border: "1px solid #fecaca", background: "#fef2f2", display: "inline-flex", alignItems: "center", gap: "0.25rem" }}
+                          onClick={(e) => { e.stopPropagation(); handleRemoveLead(lead); }}
+                        >
+                          <Trash2 size={12} /> Remove
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
@@ -2429,6 +2753,103 @@ export default function OutreachAutomation({ preselectedIncubatorName, refreshTr
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {activeSubTab === "inbox" && (
+        <div className="glass-card animate-in" style={{ padding: "1.5rem" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border-color)", paddingBottom: "1rem", marginBottom: "1rem" }}>
+            <div>
+              <h3 style={{ margin: 0, fontSize: "1.1rem", fontWeight: "700", display: "flex", alignItems: "center", gap: "0.35rem" }}>
+                📬 Inbox Conversations
+              </h3>
+              <p style={{ margin: 0, fontSize: "0.8rem", color: "var(--text-dim)" }}>
+                All emails received in your IMAP inbox. Unread messages are highlighted. Replies from campaign leads are auto-matched.
+              </p>
+            </div>
+            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+              <input
+                type="text"
+                className="form-input"
+                placeholder="Search inbox (sender, subject)..."
+                value={inboxSearch}
+                onChange={(e) => setInboxSearch(e.target.value)}
+                style={{ fontSize: "0.8rem", padding: "0.35rem 0.6rem", width: "220px", color: "black", background: "#f8fafc" }}
+              />
+              <button
+                className="btn btn-primary"
+                style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem", padding: "0.4rem 0.75rem", fontSize: "0.8rem", height: "32px" }}
+                onClick={fetchInboxEmails}
+                disabled={inboxLoading}
+              >
+                <RefreshCcw size={14} className={inboxLoading ? "spin" : ""} />
+                <span>{inboxLoading ? "Loading..." : "Refresh Inbox"}</span>
+              </button>
+            </div>
+          </div>
+
+          {inboxEmails.length === 0 && !inboxLoading ? (
+            <div style={{ padding: "3rem 1rem", textAlign: "center", border: "1px dashed var(--border-color)", borderRadius: "6px", color: "var(--text-dim)", fontSize: "0.85rem" }}>
+              <Mail size={28} style={{ margin: "0 auto 0.5rem auto", opacity: 0.4 }} />
+              <div>No inbox emails loaded. Click "Refresh Inbox" to fetch from IMAP server.</div>
+              <div style={{ fontSize: "0.75rem", marginTop: "0.5rem", opacity: 0.7 }}>Make sure IMAP is configured in Settings (IMAP_HOST, IMAP_USER, IMAP_PASS).</div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", maxHeight: "600px", overflowY: "auto" }}>
+              {inboxEmails
+                .filter(em => {
+                  if (!inboxSearch) return true;
+                  const q = inboxSearch.toLowerCase();
+                  return (em.from || "").toLowerCase().includes(q) || (em.subject || "").toLowerCase().includes(q);
+                })
+                .map((em, idx) => {
+                  const isLeadMatch = leads.some(l => l.email && l.email.toLowerCase() === (em.from || "").toLowerCase());
+                  return (
+                    <div
+                      key={idx}
+                      style={{
+                        padding: "0.75rem 1rem",
+                        background: em.is_unread ? "rgba(99, 102, 241, 0.06)" : "rgba(255,255,255,0.02)",
+                        border: `1px solid ${em.is_unread ? "rgba(99, 102, 241, 0.2)" : "var(--border-color)"}`,
+                        borderRadius: "6px",
+                        cursor: "pointer",
+                        transition: "background 0.15s"
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem" }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.25rem" }}>
+                            {em.is_unread && (
+                              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "var(--primary)", flexShrink: 0 }} />
+                            )}
+                            <span style={{ fontWeight: em.is_unread ? "700" : "600", fontSize: "0.85rem", color: "#000000" }}>
+                              {em.from_name || em.from}
+                            </span>
+                            {isLeadMatch && (
+                              <span style={{ fontSize: "0.65rem", fontWeight: "700", background: "rgba(16, 185, 129, 0.12)", color: "#065f46", padding: "1px 6px", borderRadius: "3px" }}>
+                                Campaign Lead
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: "0.78rem", fontWeight: "600", color: "#000000", marginBottom: "0.15rem" }}>
+                            {em.subject || "(no subject)"}
+                          </div>
+                          <div style={{ fontSize: "0.72rem", color: "var(--text-dim)", lineHeight: "1.4", maxHeight: "2.8em", overflow: "hidden" }}>
+                            {em.body_preview}
+                          </div>
+                        </div>
+                        <div style={{ flexShrink: 0, textAlign: "right" }}>
+                          <div style={{ fontSize: "0.7rem", color: "var(--text-dim)", whiteSpace: "nowrap" }}>{em.date}</div>
+                          <div style={{ fontSize: "0.65rem", color: "var(--text-dim)", marginTop: "0.15rem", maxWidth: "140px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {em.to}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          )}
         </div>
       )}
 

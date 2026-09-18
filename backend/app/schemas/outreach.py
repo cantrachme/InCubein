@@ -60,6 +60,10 @@ class FollowupEmailRequest(BaseModel):
     lead_id: str
 
 
+class NurtureFunnelRequest(BaseModel):
+    lead_id: str
+
+
 class OutreachConfig(BaseModel):
     sync_interval: int
     followup_delay: Optional[int] = 120

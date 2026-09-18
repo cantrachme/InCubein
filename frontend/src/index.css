@@ -2339,4 +2339,67 @@ input, select, textarea { font-family: inherit; }
   cursor: pointer;
 }
 
+/* ============================================================
+   INCUBEIN CRM MODULES (University / CEO / Analytics / Execution /
+   Commercial additions)
+   ============================================================ */
+
+/* Cards staged with a slight stagger so dashboards feel alive */
+.glass-card,
+.metric-card {
+  animation: fadeSlideUp 0.45s var(--ease-out) both;
+}
+
+.dashboard-grid .glass-card h3,
+.glass-card h3 {
+  font-size: 0.9rem;
+  font-weight: 700;
+  margin-bottom: 12px;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Compact data tables inside CRM cards */
+.glass-card .table-wrapper {
+  margin-top: 4px;
+  background: white;
+}
+
+.glass-card .data-table {
+  font-size: 0.83rem;
+}
+
+.glass-card .data-table th {
+  padding: 10px 12px;
+}
+
+.glass-card .data-table td {
+  padding: 11px 12px;
+}
+
+/* Form modal: keep number inputs clean */
+.glass-card input[type="date"],
+.glass-card input[type="number"] {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Attention chips row inside a card toolbar */
+.glass-card .tab-item {
+  margin-bottom: 0;
+}
+
+/* Donut center label */
+svg circle {
+  transition: stroke-dasharray 0.6s var(--ease-out);
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+
 

@@ -3,7 +3,7 @@ Email send logging.
 
 Every dispatched outreach email (single, mass, campaign, follow-up) is logged
 in the `email_logs` collection so operators can audit who was emailed, with
-which subject/template, and whether it was a real SMTP send or a simulation.
+which subject/template, and whether delivery succeeded or failed.
 """
 
 from datetime import datetime

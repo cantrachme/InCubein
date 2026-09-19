@@ -1,5 +1,6 @@
 import os
 import base64
+import re
 import smtplib
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
@@ -11,6 +12,22 @@ from typing import Optional, List
 from ..core import config
 from ..core.database import get_db_connection
 from ..schemas.email import MouSendRequest, ContactSendRequest
+
+
+def _format_email_text(body_text: str) -> str:
+    """Convert template Markdown-like markers into clean plain-text email."""
+    lines = []
+    for raw_line in body_text.replace("\r\n", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line or re.fullmatch(r"[-_=]{3,}", line):
+            if lines and lines[-1] != "":
+                lines.append("")
+            continue
+        line = re.sub(r"^\s*[*-]\s+", "• ", line)
+        line = re.sub(r"\*\*(.*?)\*\*", r"\1", line)
+        line = re.sub(r"(?<!\w)__(.*?)__(?!\w)", r"\1", line)
+        lines.append(line)
+    return "\n".join(lines).strip()
 
 
 def get_smtp_config(account: Optional[str] = None) -> dict:
@@ -74,7 +91,7 @@ def send_smtp_message(smtp_cfg: dict, from_addr: str, recipients, msg):
 def send_plain_email(smtp_cfg: dict, from_addr: str, recipient_email: str, subject: str, body_text: str, from_display: str = None, cc: str = None, bcc: str = None, attachments: List[dict] = None) -> bool:
     """Builds a plain-text email (optional CC/BCC/attachments) and sends it via SMTP. Returns True on real send."""
     if not smtp_cfg.get("is_smtp_ready"):
-        return False
+        raise RuntimeError("SMTP is not configured. Configure SMTP_HOST, SMTP_USER, and SMTP_PASS before sending email.")
     try:
         msg = MIMEMultipart("mixed")
         msg["Subject"] = subject
@@ -85,7 +102,7 @@ def send_plain_email(smtp_cfg: dict, from_addr: str, recipient_email: str, subje
         if bcc:
             msg["Bcc"] = bcc
         msg_alt = MIMEMultipart("alternative")
-        msg_alt.attach(MIMEText(body_text, "plain"))
+        msg_alt.attach(MIMEText(_format_email_text(body_text), "plain"))
         msg.attach(msg_alt)
         _attach_files(msg, attachments or [])
 
@@ -120,7 +137,7 @@ def _attach_files(msg, attachments: List[dict]):
 def send_outreach_single(smtp_cfg: dict, from_addr: str, recipient_email: str, subject: str, body_text: str, cc: str = None, bcc: str = None, attachments: List[dict] = None) -> bool:
     """Builds an outreach email (optional CC/BCC/attachments) and sends it via SMTP. Returns True on real send."""
     if not smtp_cfg.get("is_smtp_ready"):
-        return False
+        raise RuntimeError("SMTP is not configured. Configure SMTP_HOST, SMTP_USER, and SMTP_PASS before sending email.")
     try:
         msg = MIMEMultipart("mixed")
         msg["Subject"] = subject
@@ -131,7 +148,7 @@ def send_outreach_single(smtp_cfg: dict, from_addr: str, recipient_email: str, s
         if bcc:
             msg["Bcc"] = bcc
         msg_alt = MIMEMultipart("alternative")
-        msg_alt.attach(MIMEText(body_text, "plain"))
+        msg_alt.attach(MIMEText(_format_email_text(body_text), "plain"))
         msg.attach(msg_alt)
         _attach_files(msg, attachments or [])
 
@@ -270,38 +287,7 @@ def send_mou_email(req: MouSendRequest) -> dict:
             return {"status": "success", "message": f"MOU email successfully dispatched to {req.recipient_email}."}
         except Exception as smtp_err:
             raise RuntimeError(f"SMTP Server error: {str(smtp_err)}")
-    else:
-        try:
-            scratch_dir = config.SCRATCH_DIR
-            os.makedirs(scratch_dir, exist_ok=True)
-
-            log_path = os.path.join(str(scratch_dir), "mou_sent_log.txt")
-            with open(log_path, "w", encoding="utf-8") as f:
-                f.write(f"Timestamp: {datetime.now().isoformat()}\n")
-                f.write(f"Recipient: {req.recipient_email}\n")
-                f.write(f"Subject: Digitally Executed MOU: {req.mou_title}\n")
-                f.write(f"Party A: {req.incubator_name} ({req.incubator_email})\n")
-                f.write(f"Party B: {req.party_b_name} ({req.party_b_email})\n")
-                f.write(f"MOU Title: {req.mou_title}\n")
-                f.write("-" * 80 + "\n")
-                f.write(req.mou_text)
-                f.write("\n" + "-" * 80 + "\n")
-                f.write(f"Digital Signature Image Base64 Data URL Length: {len(req.signature_data)} chars\n")
-
-            sig_img_path = os.path.join(str(scratch_dir), "signature_debug.png")
-            with open(sig_img_path, "wb") as img_f:
-                img_f.write(sig_bytes)
-
-            return {
-                "status": "mock_success",
-                "message": "SMTP not configured in environment variables. Email simulation successfully written to file.",
-                "details": {
-                    "text_log": log_path,
-                    "signature_png": sig_img_path
-                }
-            }
-        except Exception as log_err:
-            raise RuntimeError(f"Failed to write mock log: {str(log_err)}")
+    raise RuntimeError("SMTP is not configured. Configure SMTP_HOST, SMTP_USER, and SMTP_PASS before sending email.")
 
 
 def send_contact_email(req: ContactSendRequest) -> dict:
@@ -364,28 +350,4 @@ def send_contact_email(req: ContactSendRequest) -> dict:
             return {"status": "success", "message": f"Contact email successfully sent to {req.incubator_name} at {req.recipient_email}."}
         except Exception as smtp_err:
             raise RuntimeError(f"SMTP Server error: {str(smtp_err)}")
-    else:
-        try:
-            scratch_dir = config.SCRATCH_DIR
-            os.makedirs(scratch_dir, exist_ok=True)
-
-            log_path = os.path.join(str(scratch_dir), "contact_sent_log.txt")
-            with open(log_path, "w", encoding="utf-8") as f:
-                f.write(f"Timestamp: {datetime.now().isoformat()}\n")
-                f.write(f"Recipient: {req.recipient_email} ({req.incubator_name})\n")
-                f.write(f"Subject: {req.subject}\n")
-                if req.meeting_date or req.meeting_time:
-                    f.write(f"Meeting: {req.meeting_date} at {req.meeting_time}\n")
-                f.write("-" * 80 + "\n")
-                f.write(req.message)
-                f.write("\n" + "-" * 80 + "\n")
-
-            return {
-                "status": "mock_success",
-                "message": "SMTP not configured. Contact simulation successfully written to scratch file log.",
-                "details": {
-                    "text_log": log_path
-                }
-            }
-        except Exception as log_err:
-            raise RuntimeError(f"Failed to write mock contact log: {str(log_err)}")
+    raise RuntimeError("SMTP is not configured. Configure SMTP_HOST, SMTP_USER, and SMTP_PASS before sending email.")

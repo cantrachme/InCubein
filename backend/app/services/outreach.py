@@ -432,6 +432,8 @@ def trigger_outreach_email(req: OutreachEmailRequest):
 
     smtp_cfg = get_smtp_config(req.mail_account)
     sender_email = smtp_cfg["sender_email"]
+    if not smtp_cfg["is_smtp_ready"]:
+        raise BadRequestError("SMTP is not configured. Configure the selected mail account before sending email.")
 
     lead_name = lead["incubator_name"]
     is_startup = lead["incubator_id"] == "incubein_cohort"
@@ -488,10 +490,10 @@ def trigger_outreach_email(req: OutreachEmailRequest):
         subject=subject,
         template_key=template_key,
         kind="outreach",
-        status="sent" if email_sent_successfully else "simulated",
+        status="sent" if email_sent_successfully else "failed",
     )
 
-    msg_status = "Real email sent via SMTP" if email_sent_successfully else "SMTP not configured, simulated sending"
+    msg_status = "Real email sent via SMTP" if email_sent_successfully else "Email delivery failed"
     return {"status": "success", "message": f"Outreach email campaign successfully triggered for {lead['incubator_name']} ({msg_status})."}
 
 
@@ -542,7 +544,7 @@ def send_followup_email(lead_id: str, lead_name: str, lead_email: str, followup_
         subject=subject,
         template_key=tpl.get("key", "") if tpl else "",
         kind="followup",
-        status="sent" if email_sent_successfully else "simulated",
+        status="sent" if email_sent_successfully else "failed",
         details=f"Follow-up #{followup_number}",
     )
 
@@ -573,7 +575,8 @@ def trigger_mass_send(req: MassSendRequest):
 
     smtp_cfg = get_smtp_config(req.mail_account)
     sender_email = smtp_cfg["sender_email"]
-    is_smtp_ready = smtp_cfg["is_smtp_ready"]
+    if not smtp_cfg["is_smtp_ready"]:
+        raise BadRequestError("SMTP is not configured. Configure the selected mail account before sending email.")
 
     settings = get_settings()
     batch_size = int(settings.get("scrape_batch_size", 8))
@@ -593,7 +596,7 @@ def trigger_mass_send(req: MassSendRequest):
     attachments = resolve_template_attachments(template_key) if template_key else []
 
     sent_count = 0
-    simulated_count = 0
+    failed_count = 0
     processed = 0
 
     for lead in leads:
@@ -607,27 +610,23 @@ def trigger_mass_send(req: MassSendRequest):
             subject_to_send = subject_to_send or rendered["subject"]
             body_to_send = body_to_send or rendered["body"]
 
-        # Last-resort fallback so a lead is never emailed blank.
         if not subject_to_send:
-            subject_to_send = f"Introduction to Incubein Foundation"
+            raise BadRequestError("No subject provided and no matching email template was found.")
         if not body_to_send:
-            body_to_send = f"Hello {lead['incubator_name']},\n\nGreetings from Incubein Foundation RTM Nagpur University.\n\nWe would love to schedule a 30-minute Google Meet at your convenience.\n\nWarm regards,\n\nTeam Incubein Foundation"
+            raise BadRequestError("No message provided and no matching email template was found.")
 
         # Interpolate any remaining placeholders (names, org branding, etc.)
         subject_to_send = interpolate_variables(subject_to_send, ctx)
         body_to_send = interpolate_variables(body_to_send, ctx)
 
         email_sent = False
-        if is_smtp_ready:
-            email_sent = send_outreach_single(
-                smtp_cfg, sender_email, lead["email"], subject_to_send, body_to_send, cc=cc, bcc=bcc, attachments=attachments
-            )
-            if email_sent:
-                sent_count += 1
-            else:
-                simulated_count += 1
+        email_sent = send_outreach_single(
+            smtp_cfg, sender_email, lead["email"], subject_to_send, body_to_send, cc=cc, bcc=bcc, attachments=attachments
+        )
+        if email_sent:
+            sent_count += 1
         else:
-            simulated_count += 1
+            failed_count += 1
 
         log_email_send(
             recipient_email=lead["email"],
@@ -635,7 +634,7 @@ def trigger_mass_send(req: MassSendRequest):
             subject=subject_to_send,
             template_key=tpl.get("key", "") if tpl else "",
             kind="mass",
-            status="sent" if email_sent else "simulated",
+            status="sent" if email_sent else "failed",
             details=f"Mass send ({req.target_type})",
         )
 
@@ -656,8 +655,8 @@ def trigger_mass_send(req: MassSendRequest):
     return {
         "status": "success",
         "sent_count": sent_count,
-        "simulated_count": simulated_count,
-        "message": f"Successfully processed mass send for {len(leads)} {req.target_type} ({sent_count} real emails, {simulated_count} simulated)."
+        "failed_count": failed_count,
+        "message": f"Processed {len(leads)} {req.target_type}: {sent_count} emails sent and {failed_count} failed."
     }
 
 
@@ -727,11 +726,12 @@ def dispatch_campaign(campaign_id: str):
 
     if not leads:
         update_campaign(campaign_id, {"status": "completed"})
-        return {"status": "success", "sent_count": 0, "simulated_count": 0, "message": "No recipients matched for this campaign."}
+        return {"status": "success", "sent_count": 0, "failed_count": 0, "message": "No recipients matched for this campaign."}
 
     smtp_cfg = get_smtp_config()
     sender_email = smtp_cfg["sender_email"]
-    is_smtp_ready = smtp_cfg["is_smtp_ready"]
+    if not smtp_cfg["is_smtp_ready"]:
+        raise BadRequestError("SMTP is not configured. Configure the default mail account before sending email.")
 
     settings = get_settings()
     batch_size = int(campaign.get("batch_size") or settings.get("scrape_batch_size", 8))
@@ -752,7 +752,7 @@ def dispatch_campaign(campaign_id: str):
     update_campaign(campaign_id, {"status": "sending"})
 
     sent_count = 0
-    simulated_count = 0
+    failed_count = 0
     processed = 0
 
     for lead in leads:
@@ -765,24 +765,19 @@ def dispatch_campaign(campaign_id: str):
             subject_to_send = subject_to_send or rendered["subject"]
             body_to_send = body_to_send or rendered["body"]
 
-        if not subject_to_send:
-            subject_to_send = f"Introduction to Incubein Foundation"
-        if not body_to_send:
-            body_to_send = f"Hello {lead.get('incubator_name', '')},\n\nGreetings from Incubein Foundation RTM Nagpur University.\n\nWarm regards,\n\nTeam Incubein Foundation"
+        if not subject_to_send or not body_to_send:
+            raise BadRequestError("Campaign has no subject/body and no matching email template was found.")
 
         # Interpolate any remaining placeholders (names, org branding, etc.)
         subject_to_send = interpolate_variables(subject_to_send, ctx)
         body_to_send = interpolate_variables(body_to_send, ctx)
 
         email_sent = False
-        if is_smtp_ready:
-            email_sent = send_outreach_single(smtp_cfg, sender_email, lead["email"], subject_to_send, body_to_send, cc=cc, bcc=bcc, attachments=attachments)
-            if email_sent:
-                sent_count += 1
-            else:
-                simulated_count += 1
+        email_sent = send_outreach_single(smtp_cfg, sender_email, lead["email"], subject_to_send, body_to_send, cc=cc, bcc=bcc, attachments=attachments)
+        if email_sent:
+            sent_count += 1
         else:
-            simulated_count += 1
+            failed_count += 1
 
         log_email_send(
             recipient_email=lead["email"],
@@ -791,7 +786,7 @@ def dispatch_campaign(campaign_id: str):
             template_key=tpl.get("key", "") if tpl else "",
             campaign_id=campaign_id,
             kind="campaign",
-            status="sent" if email_sent else "simulated",
+            status="sent" if email_sent else "failed",
         )
 
         if lead.get("id"):
@@ -814,8 +809,8 @@ def dispatch_campaign(campaign_id: str):
         "status": "success",
         "campaign_id": campaign_id,
         "sent_count": sent_count,
-        "simulated_count": simulated_count,
-        "message": f"Campaign '{campaign.get('name')}' dispatched to {len(leads)} recipient(s) ({sent_count} real emails, {simulated_count} simulated)."
+        "failed_count": failed_count,
+        "message": f"Campaign '{campaign.get('name')}' dispatched to {len(leads)} recipient(s): {sent_count} sent and {failed_count} failed."
     }
 
 
@@ -846,7 +841,7 @@ def send_followup_single(req: FollowupEmailRequest):
     conn.close()
 
     email_sent = send_followup_email(lead["id"], lead["incubator_name"], lead["email"], next_count)
-    msg_status = "Real email sent via SMTP" if email_sent else "SMTP not configured, simulated sending"
+    msg_status = "Real email sent via SMTP" if email_sent else "Email delivery failed"
 
     return {
         "status": "success",

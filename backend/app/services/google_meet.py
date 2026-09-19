@@ -491,11 +491,7 @@ def get_external_calendar_events():
         api_key = api_key.strip().strip('"').strip("'")
 
     if not api_key or "AIzaSy" not in api_key:
-        return {"status": "mock", "events": [
-            {"summary": "Nagpur University Foundation Day", "date": "2026-08-04"},
-            {"summary": "Independence Day Holiday", "date": "2026-08-15"},
-            {"summary": "Startup Pitch Competition", "date": "2026-09-10"}
-        ]}
+        return {"status": "not_configured", "events": []}
 
     try:
         # Fetch from Indian Holidays public calendar using their API key
@@ -516,8 +512,4 @@ def get_external_calendar_events():
     except Exception as e:
         print("Error fetching Google Calendar events:", e)
 
-    return {"status": "error_fallback", "events": [
-        {"summary": "Nagpur University Foundation Day", "date": "2026-08-04"},
-        {"summary": "Independence Day Holiday", "date": "2026-08-15"},
-        {"summary": "Startup Pitch Competition", "date": "2026-09-10"}
-    ]}
+    return {"status": "error", "events": []}

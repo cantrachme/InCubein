@@ -131,7 +131,8 @@ def _meeting_status_for_lead(db, lead):
 
 def _enrich_lead(db, lead, idx=0):
     lead = dict(lead)
-    lead["id"] = lead.get("id") or lead.get("_id") or idx
+    mongo_id = lead.pop("_id", None)
+    lead["id"] = str(lead.get("id") or mongo_id or idx)
 
     sector = lead.get("sector") or lead.get("industry") or "—"
     sub_sector = lead.get("sub_sector") or lead.get("subindustry") or "—"
@@ -300,7 +301,7 @@ def send_inquiry_reply(lead_id, body, subject=None, performed_by=""):
         recipient_name=lead.get("incubator_name") or "",
         subject=_reply_subject,
         kind="reply",
-        status="sent" if email_sent else "simulated",
+        status="sent" if email_sent else "failed",
         details=f"Inquiry reply ({entity_kind})",
     )
 
@@ -327,12 +328,12 @@ def send_inquiry_reply(lead_id, body, subject=None, performed_by=""):
         "Reply sent",
         body,
         performed_by=performed_by,
-        extra={"subject": _reply_subject, "sent_status": "sent" if email_sent else "simulated"},
+        extra={"subject": _reply_subject, "sent_status": "sent" if email_sent else "failed"},
     )
 
     return {
         "status": "success",
-        "message": ("Reply email sent via SMTP." if email_sent else "SMTP not configured — reply recorded as simulated."),
+        "message": ("Reply email sent via SMTP." if email_sent else "Reply email delivery failed."),
         "delivered": email_sent,
         "reply_sent_at": now,
     }

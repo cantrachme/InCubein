@@ -487,6 +487,8 @@ def process_seed_support_rejections(req):
         smtp_cfg = get_smtp_config()
         sender_email = smtp_cfg["sender_email"]
         is_smtp_ready = smtp_cfg["is_smtp_ready"]
+        if not is_smtp_ready:
+            raise ServiceError("SMTP is not configured. Configure SMTP_HOST, SMTP_USER, and SMTP_PASS before sending cohort emails.")
 
         tpl_cc = (tpl.get("cc") or "").strip() if tpl else ""
         tpl_bcc = (tpl.get("bcc") or "").strip() if tpl else ""
@@ -556,7 +558,7 @@ def process_seed_support_rejections(req):
                 subject=subject or "Regarding Your Application to the Incubein Startup Seed Support Cohort",
                 template_key=tpl.get("key", "startup_seed_rejection") if tpl else "startup_seed_rejection",
                 kind="seed_rejection",
-                status="sent" if email_sent else "simulated",
+                status="sent" if email_sent else "failed",
             )
 
         conn.commit()
